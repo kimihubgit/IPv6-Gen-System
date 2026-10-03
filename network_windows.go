@@ -1,3 +1,5 @@
+//go:build windows
+
 package main
 
 import (
@@ -10,16 +12,8 @@ import (
 	"syscall"
 )
 
-// NetInterface holds basic info about a Windows network adapter
-type NetInterface struct {
-	Index int
-	Name  string
-	State string
-	IPs   []net.IP
-}
-
-// GetWindowsInterfaces queries netsh to get friendly network interface names and states
-func GetWindowsInterfaces() ([]NetInterface, error) {
+// GetSystemInterfaces queries netsh to get friendly network interface names and states on Windows
+func GetSystemInterfaces() ([]NetInterface, error) {
 	cmd := exec.Command("netsh", "interface", "ipv6", "show", "interfaces")
 	cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
 	output, err := cmd.Output()
@@ -73,15 +67,15 @@ func GetWindowsInterfaces() ([]NetInterface, error) {
 		}
 
 		// Query existing IPv6 addresses for this interface
-		iface.IPs = getInterfaceIPv6Addresses(name)
+		iface.IPs = GetInterfaceIPv6Addresses(name)
 		interfaces = append(interfaces, iface)
 	}
 
 	return interfaces, nil
 }
 
-// getInterfaceIPv6Addresses gets current IPv6 addresses assigned to an interface
-func getInterfaceIPv6Addresses(ifaceName string) []net.IP {
+// GetInterfaceIPv6Addresses gets current IPv6 addresses assigned to a Windows interface
+func GetInterfaceIPv6Addresses(ifaceName string) []net.IP {
 	cmd := exec.Command("netsh", "interface", "ipv6", "show", "addresses", ifaceName)
 	cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
 	output, err := cmd.Output()
@@ -94,11 +88,9 @@ func getInterfaceIPv6Addresses(ifaceName string) []net.IP {
 	for scanner.Scan() {
 		line := strings.TrimSpace(scanner.Text())
 		if strings.HasPrefix(line, "Address ") && strings.Contains(line, " Parameters") {
-			// Extract IP
 			parts := strings.Fields(line)
 			if len(parts) >= 2 {
 				ipStr := parts[1]
-				// Remove zone index if any (e.g. fe80::1%6)
 				if idx := strings.Index(ipStr, "%"); idx != -1 {
 					ipStr = ipStr[:idx]
 				}
@@ -109,27 +101,6 @@ func getInterfaceIPv6Addresses(ifaceName string) []net.IP {
 		}
 	}
 	return ips
-}
-
-// DetectGlobalPrefix finds any public/global IPv6 or ULA address on the interface and returns its /64 prefix
-func DetectGlobalPrefix(iface NetInterface) string {
-	for _, ip := range iface.IPs {
-		// Ignore link-local (fe80::) and loopback (::1)
-		if ip.IsLinkLocalUnicast() || ip.IsLoopback() || ip.IsMulticast() {
-			continue
-		}
-
-		// Take the first 64 bits (8 bytes)
-		ip16 := ip.To16()
-		if ip16 == nil {
-			continue
-		}
-
-		prefixIP := make(net.IP, 16)
-		copy(prefixIP[:8], ip16[:8])
-		return fmt.Sprintf("%s/64", prefixIP.String())
-	}
-	return ""
 }
 
 // AddAddressToWindows runs netsh to add a single IPv6 address
@@ -169,7 +140,7 @@ func DeleteAddressFromWindows(ifaceName string, ipStr string, storeType string) 
 	return nil
 }
 
-// BatchAddIPv6 adds a slice of IPv6 addresses concurrently using a worker pool
+// BatchAddIPv6 adds a slice of IPv6 addresses concurrently using a worker pool on Windows
 func BatchAddIPv6(ifaceName string, ips []net.IP, prefixLen int, storeType string, skipAsSource bool, onProgress func(done, total int)) (int, []error) {
 	total := len(ips)
 	concurrency := 12
@@ -214,7 +185,7 @@ func BatchAddIPv6(ifaceName string, ips []net.IP, prefixLen int, storeType strin
 	return successCount, errs
 }
 
-// BatchDeleteIPv6 removes a list of IPv6 strings concurrently
+// BatchDeleteIPv6 removes a list of IPv6 strings concurrently on Windows
 func BatchDeleteIPv6(ifaceName string, ips []string, storeType string, onProgress func(done, total int)) (int, []error) {
 	total := len(ips)
 	concurrency := 12

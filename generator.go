@@ -21,6 +21,9 @@ const (
 // and returns the net.IPNet representing the network prefix.
 func ParsePrefix(prefixStr string) (*net.IPNet, error) {
 	prefixStr = strings.TrimSpace(prefixStr)
+	if prefixStr == "64" || prefixStr == "/64" || prefixStr == "48" || prefixStr == "/48" {
+		return nil, fmt.Errorf("bạn chỉ mới nhập độ dài prefix '%s' chứ chưa có địa chỉ IP (ví dụ đúng: 2405:4803:c686:2a90::/64). Bạn chỉ cần nhấn Enter để dùng dải mặc định", prefixStr)
+	}
 	if !strings.Contains(prefixStr, "/") {
 		prefixStr += "/64"
 	}

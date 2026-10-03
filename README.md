@@ -1,8 +1,10 @@
-# 🌐 Windows IPv6 Rotator & Generator (Go)
+# 🌐 IPv6 Rotator & Generator System (Windows & Linux - Go)
 
-Chương trình chuyên dụng viết bằng **Golang** giúp bạn:
+Hệ thống chuyên dụng viết bằng **Golang** hỗ trợ **đa nền tảng (Windows & Linux)** giúp bạn:
 1. **Sinh ngẫu nhiên hoặc tuần tự** hàng loạt địa chỉ IPv6 từ dải subnet `/64` hoặc `/48`.
-2. **Gán đồng thời (đa luồng) vào card mạng Windows** (Wi-Fi, Ethernet...) thông qua `netsh` với tùy chọn an toàn `skipassource=true` (không làm ảnh hưởng tới kết nối duyệt web thông thường).
+2. **Gán đồng thời (đa luồng)** vào card mạng hệ thống:
+   - **Windows**: Gán qua `netsh` với tùy chọn `skipassource=true` (an toàn, không ảnh hưởng duyệt web thông thường).
+   - **Linux**: Gán siêu tốc qua kernel `ip -6 addr add`, tự động cấu hình `sysctl max_addresses=0` để gán hàng ngàn IP không bị chặn.
 3. **Quản lý & Gỡ bỏ sạch sẽ**: Lưu lịch sử các đợt IP đã gán vào `assigned_ips.json` và hỗ trợ gỡ bỏ chỉ với 1 click.
 4. **Tích hợp sẵn Local Rotating Proxy Server**:
    - Hỗ trợ cả **HTTP/HTTPS** (`http://127.0.0.1:10808`) và **SOCKS5** (`socks5://127.0.0.1:10809`).
@@ -12,77 +14,78 @@ Chương trình chuyên dụng viết bằng **Golang** giúp bạn:
 
 ---
 
-## 📁 Cấu trúc thư mục
+## 📦 Đã Đóng Gói Sẵn 2 Bản Cho Bạn Sử Dụng
+
+Thư mục đã được đóng gói sẵn để bạn dùng ngay:
 
 ```text
-ipv6 gen/
-├── admin_windows.go    # Kiểm tra quyền Admin & gọi UAC tự động
-├── config.go           # Quản lý lưu trữ trạng thái assigned_ips.json
-├── generator.go        # Thuật toán sinh địa chỉ IPv6 (Random / Sequential)
-├── network.go          # Quét card mạng & gán/xóa IP qua netsh đa luồng
-├── proxy.go            # HTTP/HTTPS Tunneling & SOCKS5 Rotating Proxy
-├── tester.go           # Module test kết nối IPv6 thực tế
-├── main.go             # Giao diện dòng lệnh tương tác (Menu TUI) & CLI Flags
-├── ipv6-gen.exe        # File thực thi đã biên dịch sẵn
-└── README.md
+IPv6-Gen-System/
+├── 🪟 release/windows/                 # BẢN DÀNH CHO WINDOWS (1-CLICK)
+│   ├── ipv6-gen.exe                    # File thực thi Windows (x86_64)
+│   ├── Chay_Tool_Windows.bat           # Nhấp đúp là chạy (Tự xin quyền Administrator)
+│   └── HUONG_DAN_WINDOWS.md            # Hướng dẫn chi tiết sử dụng trên Windows
+│
+├── 🐧 release/linux/                   # BẢN DÀNH CHO LINUX / VPS (1-CLICK)
+│   ├── ipv6-gen-linux                  # File thực thi Linux (Static binary, mọi distro)
+│   ├── run.sh                          # Script 1-click (Tự cấp quyền + sudo + sysctl)
+│   ├── install-service.sh              # 1-Click cài dịch vụ chạy ngầm 24/7 (systemd)
+│   └── HUONG_DAN_LINUX.md              # Hướng dẫn chi tiết sử dụng trên VPS/Linux
+│
+├── build.bat                           # Script biên dịch tự động lại cả 2 bản trên Windows
+├── build.sh                            # Script biên dịch tự động lại cả 2 bản trên Linux
+└── ... mã nguồn Go đa nền tảng
 ```
 
 ---
 
-## 🚀 Cách sử dụng
+## 🪟 1. Hướng Dẫn Sử Dụng Bản Windows
 
-### Cách 1: Chạy giao diện tương tác (Khuyên dùng)
+### Cách chạy nhanh nhất:
+1. Vào thư mục `release/windows/` (hoặc ngay tại thư mục gốc).
+2. Nhấp đúp chuột vào file **`Chay_Tool_Windows.bat`**.
+3. Cửa sổ UAC của Windows sẽ bật lên -> Chọn **Yes** để cấp quyền Administrator.
+4. Menu điều khiển sẽ hiện lên trực quan:
+   - Bấm `[1]` để Sinh & Gán danh sách IPv6 vào Card mạng (`Wi-Fi` hoặc `Ethernet`).
+   - Bấm `[3]` để Bật Rotating Proxy Server (`HTTP: 10808`, `SOCKS5: 10809`).
+   - Bấm `[4]` để Kiểm tra kết nối Internet thực tế của các IPv6.
+   - Bấm `[2]` để Gỡ bỏ sạch sẽ các IPv6 đã gán.
 
-1. Nhấp chuột phải vào file **`ipv6-gen.exe`** và chọn **Run as administrator** (để có quyền cấu hình card mạng Windows).
-   *(Nếu mở thông thường, chương trình sẽ hiển thị tùy chọn [9] để tự kích hoạt lại với quyền Admin).*
-2. Màn hình Menu xuất hiện:
-   ```text
-   ==================================================================
-          🌐 WINDOWS IPV6 ROTATOR & GENERATOR TOOL (GO) 🌐           
-      Sinh & Gán hàng loạt IPv6 vào Card Mạng - Tích hợp Rotating Proxy
-   ==================================================================
-    [✓] Quyền thực thi: Administrator (Đủ quyền cấu hình card mạng)
-   ------------------------------------------------------------------
-     [1] ⚡ Sinh & Gán danh sách IPv6 vào Card mạng Windows
-     [2] 🧹 Gỡ bỏ IPv6 đã gán (Xem lịch sử & Clean up)
-     [3] 🚀 Khởi chạy Local Rotating Proxy Server (HTTP / SOCKS5)
-     [4] 🧪 Kiểm tra kết nối Internet thực tế của IPv6
-     [5] 📄 Chỉ sinh danh sách IPv6 ra file .txt (Không can thiệp card mạng)
-     [0] 🚪 Thoát
+👉 *Xem hướng dẫn chi tiết tại:* [release/windows/HUONG_DAN_WINDOWS.md](release/windows/HUONG_DAN_WINDOWS.md)
+
+---
+
+## 🐧 2. Hướng Dẫn Sử Dụng Bản Linux / VPS
+
+File thực thi `ipv6-gen-linux` được biên dịch tĩnh (**Statically Linked**), tương thích 100% với **Ubuntu, Debian, CentOS, AlmaLinux, Rocky Linux, Alpine...**
+
+### Cách chạy nhanh nhất:
+1. Tải thư mục `release/linux/` lên VPS (hoặc copy file `ipv6-gen-linux` và `run.sh`).
+2. Chạy lệnh:
+   ```bash
+   chmod +x run.sh
+   ./run.sh
    ```
+   *(Script sẽ tự động gọi sudo và cấu hình kernel sysctl để gán không giới hạn IPv6).*
 
-#### Chi tiết các bước gán IP (Mục 1):
-- **Chọn card mạng**: Tự động liệt kê các card mạng đang có (Wi-Fi, Ethernet) kèm trạng thái kết nối.
-- **Nhập IPv6 Prefix**: Tự động nhận diện dải `/64` của mạng bạn (nếu có), hoặc bạn nhập dải IPv6 của bạn (ví dụ: `2402:800:6000:1234::/64`).
-- **Nhập số lượng**: Số lượng IP muốn sinh (ví dụ: `50`, `100`, `500`).
-- **Chế độ lưu**:
-  - `active`: Tạm thời (khởi động lại máy sẽ tự sạch).
-  - `persistent`: Vĩnh viễn (tồn tại cả sau khi reboot).
-- **SkipAsSource**: Đặt là `true` để Windows không tự ý dùng các IP phụ này cho các ứng dụng thông thường, chỉ dùng khi công cụ chỉ định IP đó.
-- Sau khi gán xong, chương trình tự động xuất ra 1 file text danh sách IP và lưu trạng thái vào `assigned_ips.json`.
-
----
-
-### Cách 2: Sử dụng dòng lệnh (CLI Flags - Tự động hóa / Script)
-
-Bạn có thể tích hợp vào file `.bat` hoặc script Python:
-
+### Chạy Proxy ngầm 24/7 trên VPS (Không sợ tắt khi ngắt SSH):
+Chạy script cài đặt dịch vụ nền:
 ```bash
-# 1. Chỉ sinh 100 IPv6 từ dải ra file text:
-.\ipv6-gen.exe -action generate -prefix "2402:800:6000:1234::/64" -count 100 -out my_ips.txt
-
-# 2. Gán 50 IPv6 vào card Wi-Fi (yêu cầu Admin):
-.\ipv6-gen.exe -action add -iface "Wi-Fi" -prefix "2402:800:6000:1234::/64" -count 50
-
-# 3. Khởi chạy Rotating Proxy Server từ danh sách file:
-.\ipv6-gen.exe -action proxy -out my_ips.txt -proxy-port 10808
+sudo ./install-service.sh
 ```
+- Dịch vụ `ipv6-proxy.service` sẽ được cài đặt và tự động khởi động cùng hệ thống.
+- Quản lý dịch vụ:
+  - `systemctl status ipv6-proxy` (Xem trạng thái)
+  - `journalctl -u ipv6-proxy -f` (Xem log xoay IP trực tiếp)
+  - `sudo systemctl restart ipv6-proxy` (Khởi động lại)
+  - `sudo systemctl stop ipv6-proxy` (Dừng)
+
+👉 *Xem hướng dẫn chi tiết tại:* [release/linux/HUONG_DAN_LINUX.md](release/linux/HUONG_DAN_LINUX.md)
 
 ---
 
-## 🔌 Tích hợp Proxy vào các công cụ
+## 🔌 Tích Hợp Proxy Vào Các Công Cụ
 
-Sau khi bật chức năng **[3] Local Rotating Proxy Server**:
+Sau khi bật chức năng **[3] Local Rotating Proxy Server** (hoặc chạy service):
 - **HTTP / HTTPS Proxy**: `http://127.0.0.1:10808`
 - **SOCKS5 Proxy**: `socks5://127.0.0.1:10809`
 
@@ -112,7 +115,17 @@ curl -x http://127.0.0.1:10808 https://api64.ipify.org
 
 ---
 
-## 💡 Lưu ý quan trọng về Định tuyến IPv6 (Routing)
+## 🔨 Tự Biên Dịch Lại (Rebuild)
 
-- Để một địa chỉ IPv6 có thể **truy cập Internet thực tế**, dải `/64` mà bạn gán bắt buộc phải thuộc dải subnet được nhà mạng (Viettel, VNPT, FPT...) cấp cho modem/router của bạn, hoặc được định tuyến qua 1 đường VPN/Tunnel (WireGuard, Hurricane Electric IPv6 Tunnel).
-- Nếu bạn nhập một dải IP ngẫu nhiên không thuộc sở hữu của router, card mạng Windows vẫn gán thành công nhưng gói tin ra ngoài sẽ bị router hoặc ISP hủy (Drop). Bạn có thể dùng tính năng **[4] Kiểm tra kết nối** trong menu để xác minh.
+Nếu bạn thay đổi mã nguồn và muốn build lại cả 2 bản:
+- Trên Windows: Chạy file `build.bat`
+- Trên Linux: Chạy file `./build.sh`
+
+Lệnh build thủ công:
+```bash
+# Bản Windows
+CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -ldflags="-s -w" -o release/windows/ipv6-gen.exe .
+
+# Bản Linux
+CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags="-s -w" -o release/linux/ipv6-gen-linux .
+```

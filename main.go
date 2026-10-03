@@ -6,21 +6,31 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"runtime"
 	"strconv"
 	"strings"
 	"time"
 )
 
 func printBanner(isAdmin bool) {
+	osName := "WINDOWS"
+	roleName := "Administrator"
+	runTip := "Bạn cần chạy với quyền 'Run as Administrator' để gán IP vào Windows."
+	if runtime.GOOS == "linux" {
+		osName = "LINUX"
+		roleName = "Root / Sudo"
+		runTip = "Bạn cần chạy với 'sudo ./ipv6-gen-linux' để gán IP vào Linux."
+	}
+
 	fmt.Println("==================================================================")
-	fmt.Println("       🌐 WINDOWS IPV6 ROTATOR & GENERATOR TOOL (GO) 🌐           ")
+	fmt.Printf("        🌐 %s IPV6 ROTATOR & GENERATOR TOOL (GO) 🌐           \n", osName)
 	fmt.Println("   Sinh & Gán hàng loạt IPv6 vào Card Mạng - Tích hợp Rotating Proxy")
 	fmt.Println("==================================================================")
 	if isAdmin {
-		fmt.Println(" [✓] Quyền thực thi: Administrator (Đủ quyền cấu hình card mạng)")
+		fmt.Printf(" [✓] Quyền thực thi: %s (Đủ quyền cấu hình card mạng)\n", roleName)
 	} else {
 		fmt.Println(" [!] CẢNH BÁO: Đang chạy ở quyền User thông thường!")
-		fmt.Println("     -> Bạn cần chạy với quyền 'Run as Administrator' để gán IP vào Windows.")
+		fmt.Printf("     -> %s\n", runTip)
 	}
 	fmt.Println("------------------------------------------------------------------")
 }
@@ -42,7 +52,7 @@ func readLine(scanner *bufio.Scanner, prompt string, defaultVal string) string {
 }
 
 func selectInterface(scanner *bufio.Scanner) (*NetInterface, error) {
-	ifaces, err := GetWindowsInterfaces()
+	ifaces, err := GetSystemInterfaces()
 	if err != nil {
 		return nil, err
 	}
@@ -85,14 +95,18 @@ func selectInterface(scanner *bufio.Scanner) (*NetInterface, error) {
 
 func handleAddIPv6(scanner *bufio.Scanner, isAdmin bool) {
 	if !isAdmin {
-		fmt.Println("\n❌ Bạn cần quyền Administrator để gán IP vào card mạng!")
-		ans := readLine(scanner, "Bạn có muốn mở lại chương trình với quyền Admin không? (y/n)", "y")
+		roleName := "Administrator"
+		if runtime.GOOS == "linux" {
+			roleName = "Root / Sudo"
+		}
+		fmt.Printf("\n❌ Bạn cần quyền %s để gán IP vào card mạng!\n", roleName)
+		ans := readLine(scanner, fmt.Sprintf("Bạn có muốn nâng quyền %s không? (y/n)", roleName), "y")
 		if strings.ToLower(ans) == "y" {
 			err := RelaunchAsAdmin()
 			if err != nil {
-				fmt.Printf("Lỗi kích hoạt quyền Admin: %v\n", err)
+				fmt.Printf("Lỗi kích hoạt quyền %s: %v\n", roleName, err)
 			} else {
-				fmt.Println("Đã gửi yêu cầu cấp quyền Admin. Đang thoát cửa sổ này...")
+				fmt.Printf("Đã gửi yêu cầu cấp quyền %s. Đang thoát cửa sổ này...\n", roleName)
 				os.Exit(0)
 			}
 		}
@@ -112,7 +126,12 @@ func handleAddIPv6(scanner *bufio.Scanner, isAdmin bool) {
 	}
 
 	fmt.Printf("\nCard mạng được chọn: [%s]\n", iface.Name)
-	prefixInput := readLine(scanner, "👉 Nhập IPv6 Prefix (/64 hoặc /48)", defaultPrefixPrompt)
+	prefixInput := readLine(scanner, "👉 Nhập IPv6 Prefix (Nhấn Enter để dùng dải có sẵn)", defaultPrefixPrompt)
+	cleanPrefix := strings.TrimSpace(prefixInput)
+	if (cleanPrefix == "64" || cleanPrefix == "/64" || cleanPrefix == "48" || cleanPrefix == "/48") && detectedPrefix != "" {
+		fmt.Printf("💡 Bạn vừa nhập '%s', hệ thống tự động chọn dải IPv6 có sẵn của máy: %s\n", cleanPrefix, detectedPrefix)
+		prefixInput = detectedPrefix
+	}
 	ipNet, err := ParsePrefix(prefixInput)
 	if err != nil {
 		fmt.Printf("❌ %v\n", err)
@@ -196,7 +215,11 @@ func handleAddIPv6(scanner *bufio.Scanner, isAdmin bool) {
 
 func handleRemoveIPv6(scanner *bufio.Scanner, isAdmin bool) {
 	if !isAdmin {
-		fmt.Println("\n❌ Bạn cần quyền Administrator để gỡ bỏ IP khỏi card mạng!")
+		roleName := "Administrator"
+		if runtime.GOOS == "linux" {
+			roleName = "Root / Sudo"
+		}
+		fmt.Printf("\n❌ Bạn cần quyền %s để gỡ bỏ IP khỏi card mạng!\n", roleName)
 		return
 	}
 
@@ -263,7 +286,7 @@ func manualRemoveIPv6(scanner *bufio.Scanner) {
 		return
 	}
 
-	currentIPs := getInterfaceIPv6Addresses(iface.Name)
+	currentIPs := GetInterfaceIPv6Addresses(iface.Name)
 	var toDelete []string
 	for _, ip := range currentIPs {
 		if ipNet.Contains(ip) {
@@ -392,7 +415,11 @@ func testConnectivityWithIPs(ips []net.IP) {
 }
 
 func handleGenerateOnly(scanner *bufio.Scanner) {
-	prefixInput := readLine(scanner, "👉 Nhập IPv6 Prefix (/64 hoặc /48)", "2402:800:6000:1234::/64")
+	prefixInput := readLine(scanner, "👉 Nhập IPv6 Prefix (Nhấn Enter để dùng dải mẫu)", "2402:800:6000:1234::/64")
+	cleanPrefix := strings.TrimSpace(prefixInput)
+	if cleanPrefix == "64" || cleanPrefix == "/64" || cleanPrefix == "48" || cleanPrefix == "/48" {
+		prefixInput = "2402:800:6000:1234::/64"
+	}
 	ipNet, err := ParsePrefix(prefixInput)
 	if err != nil {
 		fmt.Printf("❌ %v\n", err)
@@ -433,9 +460,14 @@ func handleGenerateOnly(scanner *bufio.Scanner) {
 }
 
 func main() {
+	defaultIface := "Wi-Fi"
+	if runtime.GOOS == "linux" {
+		defaultIface = "eth0"
+	}
+
 	// Parse CLI flags for automated/headless usage
 	actionFlag := flag.String("action", "", "Chức năng thực thi [add|delete|proxy|generate|test]")
-	ifaceFlag := flag.String("iface", "Wi-Fi", "Tên card mạng (vd: Wi-Fi, Ethernet)")
+	ifaceFlag := flag.String("iface", defaultIface, "Tên card mạng (vd: Wi-Fi, Ethernet trên Windows; eth0, ens3 trên Linux)")
 	prefixFlag := flag.String("prefix", "", "IPv6 Prefix (vd: 2402:800:1234:5678::/64)")
 	countFlag := flag.Int("count", 50, "Số lượng IPv6 cần sinh")
 	proxyPortFlag := flag.Int("proxy-port", 10808, "Cổng Local Proxy")
@@ -460,7 +492,11 @@ func main() {
 
 		case "add":
 			if !isAdmin {
-				fmt.Println("Cần quyền Administrator để gán IP!")
+				roleName := "Administrator"
+				if runtime.GOOS == "linux" {
+					roleName = "Root / Sudo"
+				}
+				fmt.Printf("Cần quyền %s để gán IP!\n", roleName)
 				os.Exit(1)
 			}
 			ipNet, err := ParsePrefix(*prefixFlag)
@@ -496,13 +532,17 @@ func main() {
 
 	for {
 		printBanner(isAdmin)
-		fmt.Println("  [1] ⚡ Sinh & Gán danh sách IPv6 vào Card mạng Windows")
+		fmt.Println("  [1] ⚡ Sinh & Gán danh sách IPv6 vào Card mạng")
 		fmt.Println("  [2] 🧹 Gỡ bỏ IPv6 đã gán (Xem lịch sử & Clean up)")
 		fmt.Println("  [3] 🚀 Khởi chạy Local Rotating Proxy Server (HTTP / SOCKS5)")
 		fmt.Println("  [4] 🧪 Kiểm tra kết nối Internet thực tế của IPv6")
 		fmt.Println("  [5] 📄 Chỉ sinh danh sách IPv6 ra file .txt (Không can thiệp card mạng)")
 		if !isAdmin {
-			fmt.Println("  [9] 🔑 Khởi động lại chương trình với quyền Administrator (UAC)")
+			relaunchPrompt := "Administrator (UAC)"
+			if runtime.GOOS == "linux" {
+				relaunchPrompt = "Root / Sudo"
+			}
+			fmt.Printf("  [9] 🔑 Khởi động lại chương trình với quyền %s\n", relaunchPrompt)
 		}
 		fmt.Println("  [0] 🚪 Thoát")
 		fmt.Println("------------------------------------------------------------------")
