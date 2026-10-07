@@ -1,39 +1,47 @@
-# 🌐 IPv6 Rotator & Generator System (Windows & Linux - Go)
+# 🌐 IPv6 Rotator & Generator System (Go)
 
-Hệ thống chuyên dụng viết bằng **Golang** hỗ trợ **đa nền tảng (Windows & Linux)** giúp bạn:
-1. **Sinh ngẫu nhiên hoặc tuần tự** hàng loạt địa chỉ IPv6 từ dải subnet `/64` hoặc `/48`.
-2. **Gán đồng thời (đa luồng)** vào card mạng hệ thống:
-   - **Windows**: Gán qua `netsh` với tùy chọn `skipassource=true` (an toàn, không ảnh hưởng duyệt web thông thường).
-   - **Linux**: Gán siêu tốc qua kernel `ip -6 addr add`, tự động cấu hình `sysctl max_addresses=0` để gán hàng ngàn IP không bị chặn.
-3. **Quản lý & Gỡ bỏ sạch sẽ**: Lưu lịch sử các đợt IP đã gán vào `assigned_ips.json` và hỗ trợ gỡ bỏ chỉ với 1 click.
-4. **Tích hợp sẵn Local Rotating Proxy Server**:
-   - Hỗ trợ cả **HTTP/HTTPS** (`http://127.0.0.1:10808`) và **SOCKS5** (`socks5://127.0.0.1:10809`).
-   - Mỗi kết nối / request gửi qua proxy sẽ tự động xoay (round-robin / random) qua một địa chỉ IPv6 trong danh sách đã tạo.
-   - Dễ dàng gắn vào các tool nuôi acc, crawler, bot, Antidetect Browser (AdsPower, GoLogin, Multilogin, Dolphin Anty...).
-5. **Kiểm tra kết nối Internet thực tế**: Bắn request test outbound gắn `LocalAddr` vào từng IPv6 để kiểm tra router/ISP đã route thông IPv6 chưa.
+Hệ thống chuyên dụng viết bằng **Golang** được **tách biệt hoàn toàn thành 2 thư mục độc lập**:
+- 🪟 Thư mục **`windows/`**: Dành riêng 100% cho máy tính Windows (Source code Windows, script `.bat`, file `.exe`).
+- 🐧 Thư mục **`linux/`**: Dành riêng 100% cho VPS / Server Linux (Source code Linux, script `.sh`, dịch vụ systemd, binary Linux).
 
 ---
 
-## 📦 Đã Đóng Gói Sẵn 2 Bản Cho Bạn Sử Dụng
-
-Thư mục đã được đóng gói sẵn để bạn dùng ngay:
+## 📁 Cấu Trúc Thư Mục Tách Biệt Độc Lập
 
 ```text
 IPv6-Gen-System/
-├── 🪟 release/windows/                 # BẢN DÀNH CHO WINDOWS (1-CLICK)
-│   ├── ipv6-gen.exe                    # File thực thi Windows (x86_64)
-│   ├── Chay_Tool_Windows.bat           # Nhấp đúp là chạy (Tự xin quyền Administrator)
-│   └── HUONG_DAN_WINDOWS.md            # Hướng dẫn chi tiết sử dụng trên Windows
 │
-├── 🐧 release/linux/                   # BẢN DÀNH CHO LINUX / VPS (1-CLICK)
-│   ├── ipv6-gen-linux                  # File thực thi Linux (Static binary, mọi distro)
-│   ├── run.sh                          # Script 1-click (Tự cấp quyền + sudo + sysctl)
-│   ├── install-service.sh              # 1-Click cài dịch vụ chạy ngầm 24/7 (systemd)
-│   └── HUONG_DAN_LINUX.md              # Hướng dẫn chi tiết sử dụng trên VPS/Linux
+├── 🪟 windows/                      # MÃ NGUỒN & CÔNG CỤ DÀNH RIÊNG CHO WINDOWS
+│   ├── main.go                     # File chạy chính tối ưu cho Windows
+│   ├── network.go                  # Xử lý card mạng bằng netsh Windows
+│   ├── admin.go                    # Xử lý quyền UAC / Administrator Windows
+│   ├── pool.go                     # Chế độ Dynamic Rolling Pool (Xoay cuốn chiếu 200 IPs, không lag máy)
+│   ├── proxy.go                    # Local Rotating Proxy (HTTP 10808 / SOCKS5 10809)
+│   ├── generator.go                # Sinh ngẫu nhiên IPv6 theo dải prefix
+│   ├── tester.go                   # Kiểm tra kết nối outbound
+│   ├── config.go & network_common.go
+│   ├── go.mod                      # Module Go độc lập của Windows
+│   ├── Chay_Tool_Windows.bat       # Nhấp đúp chuột là chạy ngay (tự xin UAC)
+│   ├── build.bat                   # Script biên dịch lại ipv6-gen.exe
+│   ├── ipv6-gen.exe                # File thực thi Windows đã build sẵn
+│   └── HUONG_DAN_WINDOWS.md        # Hướng dẫn chi tiết cho Windows
 │
-├── build.bat                           # Script biên dịch tự động lại cả 2 bản trên Windows
-├── build.sh                            # Script biên dịch tự động lại cả 2 bản trên Linux
-└── ... mã nguồn Go đa nền tảng
+├── 🐧 linux/                        # MÃ NGUỒN & CÔNG CỤ DÀNH RIÊNG CHO LINUX / VPS
+│   ├── main.go                     # File chạy chính tối ưu cho Linux
+│   ├── network.go                  # Xử lý card mạng bằng iproute2 kernel Linux
+│   ├── admin.go                    # Xử lý quyền root / sudo Linux
+│   ├── pool.go                     # Dynamic Rolling Pool cho Linux
+│   ├── proxy.go                    # Rotating Proxy Server
+│   ├── generator.go & tester.go & config.go
+│   ├── go.mod                      # Module Go độc lập của Linux
+│   ├── run.sh                      # Script 1-click chạy ngay (tự cấp quyền + sudo)
+│   ├── build.sh                    # Script biên dịch trên Linux
+│   ├── install-service.sh          # Cài dịch vụ chạy ngầm 24/7 (systemd)
+│   ├── ipv6-gen-linux              # File binary Linux đã build sẵn
+│   └── HUONG_DAN_LINUX.md          # Hướng dẫn chi tiết cho VPS Linux
+│
+├── build_all.bat                   # Biên dịch tự động toàn bộ cả 2 bản
+└── README.md
 ```
 
 ---

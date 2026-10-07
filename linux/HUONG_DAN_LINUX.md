@@ -91,15 +91,31 @@ curl -x http://127.0.0.1:10808 https://api64.ipify.org ; echo ""
 
 ---
 
-## 🌐 Dùng Proxy Từ Máy Tính Cá Nhân (Client) Về VPS
+## 🌐 Dùng Proxy Từ Máy Tính Windows Về VPS
 
-Nếu Proxy đang chạy trên VPS (ví dụ IP VPS là `1.2.3.4`):
-### Cách 1: Sử dụng SSH Tunnel (An toàn nhất, không cần mở port)
-Trên máy tính cá nhân của bạn, chạy lệnh sau:
-```bash
-ssh -L 10808:127.0.0.1:10808 root@IP_VPS_CUA_BAN
+Sau khi VPS đã bật proxy (IP VPS ví dụ là `103.x.x.x`):
+
+### Cách 1: Kết nối trực tiếp qua IP VPS (Tiện lợi, dùng thẳng cho Antidetect Browser)
+1. **Mở port trên VPS** (nếu VPS bật Firewall / UFW):
+   ```bash
+   sudo ufw allow 10808/tcp
+   sudo ufw allow 10809/tcp
+   ```
+   *(Lưu ý: Nếu VPS trên AWS / Oracle Cloud / Google Cloud / Linode / DigitalOcean có mục Security Group / Network Firewall trên web quản lý, hãy thêm Inbound Rule mở port `10808` và `10809`)*.
+
+2. **Cấu hình trên máy Windows** (trình duyệt, AdsPower, GoLogin, Hidemyacc, Python...):
+   - **HTTP Proxy**: Host: `IP_VPS` | Port: `10808`
+   - **SOCKS5 Proxy**: Host: `IP_VPS` | Port: `10809`
+   - Mỗi kết nối từ Windows gửi tới VPS sẽ tự động ra ngoài Internet bằng 1 IPv6 ngẫu nhiên trong dải của VPS!
+
+### Cách 2: Sử dụng SSH Tunnel (An toàn tuyệt đối, không cần mở port ra ngoài Internet)
+Trên máy tính Windows, mở PowerShell chạy lệnh:
+```powershell
+ssh -L 10808:127.0.0.1:10808 -L 10809:127.0.0.1:10809 root@IP_VPS_CUA_BAN
 ```
-Sau đó trên máy tính của bạn, nhập proxy là `127.0.0.1:10808` vào trình duyệt hoặc AdsPower/GoLogin. Toàn bộ lưu lượng sẽ được mã hóa gửi sang VPS và xoay IPv6 ra ngoài Internet!
+Sau đó trên Windows, bạn chỉ cần nhập proxy là:
+- Host: `127.0.0.1` | Port: `10808` (HTTP) hoặc `10809` (SOCKS5).
+Toàn bộ kết nối được mã hóa bảo mật gửi qua SSH tới VPS.
 
 ---
 

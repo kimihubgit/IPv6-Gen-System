@@ -1,0 +1,310 @@
+package main
+
+import (
+	"context"
+	"fmt"
+	"io"
+	"log"
+	"math/rand"
+	"net"
+	"net/http"
+	"os"
+	"os/signal"
+	"sync"
+	"sync/atomic"
+	"syscall"
+	"time"
+)
+
+// RotatingProxy holds the list of local IPv6 addresses to rotate through
+type RotatingProxy struct {
+	IPs         []net.IP
+	port        int
+	counter     uint64
+	httpServer  *http.Server
+	socksServer net.Listener
+	mu          sync.RWMutex
+	pool        *RollingPool // If set, delegates IP rotation to dynamic rolling pool
+}
+
+// NewRotatingProxy creates a new rotating proxy instance with static IPs
+func NewRotatingProxy(ips []net.IP, port int) *RotatingProxy {
+	return &RotatingProxy{
+		IPs:  ips,
+		port: port,
+	}
+}
+
+// NewDynamicRotatingProxy creates a new rotating proxy driven by a dynamic rolling pool
+func NewDynamicRotatingProxy(pool *RollingPool, port int) *RotatingProxy {
+	return &RotatingProxy{
+		pool: pool,
+		port: port,
+	}
+}
+
+// PickIPv6 picks an IPv6 from the list or pool using round-robin
+func (p *RotatingProxy) PickIPv6() net.IP {
+	if p.pool != nil {
+		return p.pool.PickIPv6()
+	}
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	if len(p.IPs) == 0 {
+		return nil
+	}
+	idx := atomic.AddUint64(&p.counter, 1) % uint64(len(p.IPs))
+	return p.IPs[idx]
+}
+
+// RandomIPv6 picks a random IPv6 from the list or pool
+func (p *RotatingProxy) RandomIPv6() net.IP {
+	if p.pool != nil {
+		return p.pool.RandomIPv6()
+	}
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	if len(p.IPs) == 0 {
+		return nil
+	}
+	return p.IPs[rand.Intn(len(p.IPs))]
+}
+
+// Start launches both HTTP(S) proxy and SOCKS5 proxy
+func (p *RotatingProxy) Start() error {
+	// Hook termination signals to ensure cleanup of IPs from network card
+	sigChan := make(chan os.Signal, 1)
+	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
+	go func() {
+		<-sigChan
+		fmt.Printf("\n🛑 Nhận tín hiệu dừng! Đang tắt Proxy Server...\n")
+		p.Stop()
+		os.Exit(0)
+	}()
+
+	// 1. Start HTTP/HTTPS Proxy on port
+	httpAddr := fmt.Sprintf("127.0.0.1:%d", p.port)
+	p.httpServer = &http.Server{
+		Addr: httpAddr,
+		Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.Method == http.MethodConnect {
+				p.handleTunneling(w, r)
+			} else {
+				p.handleHTTP(w, r)
+			}
+		}),
+	}
+
+	// 2. Start SOCKS5 Proxy on port + 1
+	socksAddr := fmt.Sprintf("127.0.0.1:%d", p.port+1)
+	socksListener, err := net.Listen("tcp", socksAddr)
+	if err != nil {
+		return fmt.Errorf("không thể lắng nghe cổng SOCKS5 %s: %w", socksAddr, err)
+	}
+	p.socksServer = socksListener
+
+	go func() {
+		for {
+			conn, err := p.socksServer.Accept()
+			if err != nil {
+				return
+			}
+			go p.handleSOCKS5(conn)
+		}
+	}()
+
+	fmt.Printf("\n🚀 Proxy Server đã khởi động thành công!\n")
+	fmt.Printf("   👉 HTTP / HTTPS Proxy:  http://127.0.0.1:%d\n", p.port)
+	fmt.Printf("   👉 SOCKS5 Proxy:        socks5://127.0.0.1:%d\n", p.port+1)
+	if p.pool != nil {
+		fmt.Printf("   ⚡ Chế độ: Dynamic Rolling Pool (%d IPs duy trì, tự động xoay liên tục)\n", p.pool.poolSize)
+	} else {
+		fmt.Printf("   ⚡ Tổng số IPv6 xoay vòng: %d IPs\n", len(p.IPs))
+	}
+	fmt.Printf("   Nhấn Ctrl+C để dừng Proxy Server (tự động dọn sạch card mạng).\n\n")
+
+	return p.httpServer.ListenAndServe()
+}
+
+// Stop gracefully stops the proxy servers and any attached rolling pool
+func (p *RotatingProxy) Stop() {
+	if p.httpServer != nil {
+		p.httpServer.Shutdown(context.Background())
+	}
+	if p.socksServer != nil {
+		p.socksServer.Close()
+	}
+	if p.pool != nil {
+		p.pool.Stop()
+	}
+}
+
+// dialTarget connects to destination binding to a rotated local IPv6
+func (p *RotatingProxy) dialTarget(target string) (net.Conn, net.IP, error) {
+	outIP := p.PickIPv6()
+	var dialer net.Dialer
+	dialer.Timeout = 10 * time.Second
+
+	if outIP != nil {
+		dialer.LocalAddr = &net.TCPAddr{
+			IP: outIP,
+		}
+	}
+
+	conn, err := dialer.Dial("tcp", target)
+	return conn, outIP, err
+}
+
+// handleTunneling handles HTTPS CONNECT method
+func (p *RotatingProxy) handleTunneling(w http.ResponseWriter, r *http.Request) {
+	destConn, outIP, err := p.dialTarget(r.Host)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusServiceUnavailable)
+		return
+	}
+	defer destConn.Close()
+
+	hijacker, ok := w.(http.Hijacker)
+	if !ok {
+		http.Error(w, "Hijacking not supported", http.StatusInternalServerError)
+		return
+	}
+
+	clientConn, _, err := hijacker.Hijack()
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusServiceUnavailable)
+		return
+	}
+	defer clientConn.Close()
+
+	clientConn.Write([]byte("HTTP/1.1 200 Connection Established\r\n\r\n"))
+
+	if outIP != nil {
+		log.Printf("[HTTPS CONNECT] %s -> Outbound IPv6: %s", r.Host, outIP.String())
+	}
+
+	// Bidirectional transfer
+	go io.Copy(destConn, clientConn)
+	io.Copy(clientConn, destConn)
+}
+
+// handleHTTP handles plain HTTP proxy requests
+func (p *RotatingProxy) handleHTTP(w http.ResponseWriter, r *http.Request) {
+	outIP := p.PickIPv6()
+	transport := &http.Transport{
+		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
+			var dialer net.Dialer
+			dialer.Timeout = 10 * time.Second
+			if outIP != nil {
+				dialer.LocalAddr = &net.TCPAddr{IP: outIP}
+			}
+			return dialer.DialContext(ctx, network, addr)
+		},
+	}
+
+	outReq, err := http.NewRequestWithContext(r.Context(), r.Method, r.URL.String(), r.Body)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	outReq.Header = r.Header.Clone()
+
+	resp, err := transport.RoundTrip(outReq)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadGateway)
+		return
+	}
+	defer resp.Body.Close()
+
+	if outIP != nil {
+		log.Printf("[HTTP %s] %s -> Outbound IPv6: %s", r.Method, r.URL.Host, outIP.String())
+	}
+
+	for k, vv := range resp.Header {
+		for _, v := range vv {
+			w.Header().Add(k, v)
+		}
+	}
+	w.WriteHeader(resp.StatusCode)
+	io.Copy(w, resp.Body)
+}
+
+// handleSOCKS5 implements RFC 1928 SOCKS5 Protocol
+func (p *RotatingProxy) handleSOCKS5(client net.Conn) {
+	defer client.Close()
+
+	buf := make([]byte, 256)
+	// 1. Negotiation version
+	if _, err := io.ReadFull(client, buf[:2]); err != nil {
+		return
+	}
+	if buf[0] != 0x05 { // SOCKS5
+		return
+	}
+	numMethods := int(buf[1])
+	if _, err := io.ReadFull(client, buf[:numMethods]); err != nil {
+		return
+	}
+
+	// Respond: 0x05 (SOCKS5), 0x00 (NO AUTH REQUIRED)
+	client.Write([]byte{0x05, 0x00})
+
+	// 2. Request details
+	if _, err := io.ReadFull(client, buf[:4]); err != nil {
+		return
+	}
+	if buf[0] != 0x05 || buf[1] != 0x01 { // 0x01 = CONNECT
+		return
+	}
+
+	var targetHost string
+	switch buf[3] {
+	case 0x01: // IPv4
+		if _, err := io.ReadFull(client, buf[:4]); err != nil {
+			return
+		}
+		targetHost = net.IP(buf[:4]).String()
+	case 0x03: // Domain name
+		if _, err := io.ReadFull(client, buf[:1]); err != nil {
+			return
+		}
+		domainLen := int(buf[0])
+		if _, err := io.ReadFull(client, buf[:domainLen]); err != nil {
+			return
+		}
+		targetHost = string(buf[:domainLen])
+	case 0x04: // IPv6
+		if _, err := io.ReadFull(client, buf[:16]); err != nil {
+			return
+		}
+		targetHost = net.IP(buf[:16]).String()
+	default:
+		return
+	}
+
+	// Read Port (2 bytes)
+	if _, err := io.ReadFull(client, buf[:2]); err != nil {
+		return
+	}
+	port := (int(buf[0]) << 8) | int(buf[1])
+	targetAddr := fmt.Sprintf("%s:%d", targetHost, port)
+
+	// Connect to target with rotated IPv6
+	destConn, outIP, err := p.dialTarget(targetAddr)
+	if err != nil {
+		// Connection refused
+		client.Write([]byte{0x05, 0x05, 0x00, 0x01, 0, 0, 0, 0, 0, 0})
+		return
+	}
+	defer destConn.Close()
+
+	// Success response: 0x05, 0x00, 0x00, 0x01, 0, 0, 0, 0, 0, 0
+	client.Write([]byte{0x05, 0x00, 0x00, 0x01, 0, 0, 0, 0, 0, 0})
+
+	if outIP != nil {
+		log.Printf("[SOCKS5 CONNECT] %s -> Outbound IPv6: %s", targetAddr, outIP.String())
+	}
+
+	go io.Copy(destConn, client)
+	io.Copy(client, destConn)
+}

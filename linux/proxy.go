@@ -8,31 +8,55 @@ import (
 	"math/rand"
 	"net"
 	"net/http"
+	"os"
+	"os/signal"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"time"
 )
 
 // RotatingProxy holds the list of local IPv6 addresses to rotate through
 type RotatingProxy struct {
 	IPs         []net.IP
+	host        string
 	port        int
 	counter     uint64
 	httpServer  *http.Server
 	socksServer net.Listener
 	mu          sync.RWMutex
+	pool        *RollingPool // If set, delegates IP rotation to dynamic rolling pool
 }
 
-// NewRotatingProxy creates a new rotating proxy instance
-func NewRotatingProxy(ips []net.IP, port int) *RotatingProxy {
+// NewRotatingProxy creates a new rotating proxy instance with static IPs
+func NewRotatingProxy(ips []net.IP, host string, port int) *RotatingProxy {
+	if host == "" {
+		host = "0.0.0.0"
+	}
 	return &RotatingProxy{
 		IPs:  ips,
+		host: host,
 		port: port,
 	}
 }
 
-// PickIPv6 picks an IPv6 from the list using round-robin
+// NewDynamicRotatingProxy creates a new rotating proxy driven by a dynamic rolling pool
+func NewDynamicRotatingProxy(pool *RollingPool, host string, port int) *RotatingProxy {
+	if host == "" {
+		host = "0.0.0.0"
+	}
+	return &RotatingProxy{
+		pool: pool,
+		host: host,
+		port: port,
+	}
+}
+
+// PickIPv6 picks an IPv6 from the list or pool using round-robin
 func (p *RotatingProxy) PickIPv6() net.IP {
+	if p.pool != nil {
+		return p.pool.PickIPv6()
+	}
 	p.mu.RLock()
 	defer p.mu.RUnlock()
 	if len(p.IPs) == 0 {
@@ -42,8 +66,11 @@ func (p *RotatingProxy) PickIPv6() net.IP {
 	return p.IPs[idx]
 }
 
-// RandomIPv6 picks a random IPv6 from the list
+// RandomIPv6 picks a random IPv6 from the list or pool
 func (p *RotatingProxy) RandomIPv6() net.IP {
+	if p.pool != nil {
+		return p.pool.RandomIPv6()
+	}
 	p.mu.RLock()
 	defer p.mu.RUnlock()
 	if len(p.IPs) == 0 {
@@ -54,8 +81,22 @@ func (p *RotatingProxy) RandomIPv6() net.IP {
 
 // Start launches both HTTP(S) proxy and SOCKS5 proxy
 func (p *RotatingProxy) Start() error {
+	if p.host == "" {
+		p.host = "0.0.0.0"
+	}
+
+	// Hook termination signals to ensure cleanup of IPs from network card
+	sigChan := make(chan os.Signal, 1)
+	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
+	go func() {
+		<-sigChan
+		fmt.Printf("\n🛑 Nhận tín hiệu dừng! Đang tắt Proxy Server...\n")
+		p.Stop()
+		os.Exit(0)
+	}()
+
 	// 1. Start HTTP/HTTPS Proxy on port
-	httpAddr := fmt.Sprintf("127.0.0.1:%d", p.port)
+	httpAddr := fmt.Sprintf("%s:%d", p.host, p.port)
 	p.httpServer = &http.Server{
 		Addr: httpAddr,
 		Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -68,7 +109,7 @@ func (p *RotatingProxy) Start() error {
 	}
 
 	// 2. Start SOCKS5 Proxy on port + 1
-	socksAddr := fmt.Sprintf("127.0.0.1:%d", p.port+1)
+	socksAddr := fmt.Sprintf("%s:%d", p.host, p.port+1)
 	socksListener, err := net.Listen("tcp", socksAddr)
 	if err != nil {
 		return fmt.Errorf("không thể lắng nghe cổng SOCKS5 %s: %w", socksAddr, err)
@@ -86,21 +127,31 @@ func (p *RotatingProxy) Start() error {
 	}()
 
 	fmt.Printf("\n🚀 Proxy Server đã khởi động thành công!\n")
-	fmt.Printf("   👉 HTTP / HTTPS Proxy:  http://127.0.0.1:%d\n", p.port)
-	fmt.Printf("   👉 SOCKS5 Proxy:        socks5://127.0.0.1:%d\n", p.port+1)
-	fmt.Printf("   ⚡ Tổng số IPv6 xoay vòng: %d IPs\n", len(p.IPs))
-	fmt.Printf("   Nhấn Ctrl+C để dừng Proxy Server.\n\n")
+	fmt.Printf("   👉 HTTP / HTTPS Proxy:  http://%s:%d\n", p.host, p.port)
+	fmt.Printf("   👉 SOCKS5 Proxy:        socks5://%s:%d\n", p.host, p.port+1)
+	if p.host == "0.0.0.0" {
+		fmt.Printf("   💡 Từ máy Windows, kết nối qua: http://<IP_VPS>:%d hoặc socks5://<IP_VPS>:%d\n", p.port, p.port+1)
+	}
+	if p.pool != nil {
+		fmt.Printf("   ⚡ Chế độ: Dynamic Rolling Pool (%d IPs duy trì, tự động xoay liên tục)\n", p.pool.poolSize)
+	} else {
+		fmt.Printf("   ⚡ Tổng số IPv6 xoay vòng: %d IPs\n", len(p.IPs))
+	}
+	fmt.Printf("   Nhấn Ctrl+C để dừng Proxy Server (tự động dọn sạch card mạng).\n\n")
 
 	return p.httpServer.ListenAndServe()
 }
 
-// Stop gracefully stops the proxy servers
+// Stop gracefully stops the proxy servers and any attached rolling pool
 func (p *RotatingProxy) Stop() {
 	if p.httpServer != nil {
 		p.httpServer.Shutdown(context.Background())
 	}
 	if p.socksServer != nil {
 		p.socksServer.Close()
+	}
+	if p.pool != nil {
+		p.pool.Stop()
 	}
 }
 

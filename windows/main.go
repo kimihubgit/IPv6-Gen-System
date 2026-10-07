@@ -6,31 +6,21 @@ import (
 	"fmt"
 	"net"
 	"os"
-	"runtime"
 	"strconv"
 	"strings"
 	"time"
 )
 
 func printBanner(isAdmin bool) {
-	osName := "WINDOWS"
-	roleName := "Administrator"
-	runTip := "Bạn cần chạy với quyền 'Run as Administrator' để gán IP vào Windows."
-	if runtime.GOOS == "linux" {
-		osName = "LINUX"
-		roleName = "Root / Sudo"
-		runTip = "Bạn cần chạy với 'sudo ./ipv6-gen-linux' để gán IP vào Linux."
-	}
-
 	fmt.Println("==================================================================")
-	fmt.Printf("        🌐 %s IPV6 ROTATOR & GENERATOR TOOL (GO) 🌐           \n", osName)
+	fmt.Println("        🌐 WINDOWS IPV6 ROTATOR & GENERATOR TOOL (GO) 🌐           ")
 	fmt.Println("   Sinh & Gán hàng loạt IPv6 vào Card Mạng - Tích hợp Rotating Proxy")
 	fmt.Println("==================================================================")
 	if isAdmin {
-		fmt.Printf(" [✓] Quyền thực thi: %s (Đủ quyền cấu hình card mạng)\n", roleName)
+		fmt.Println(" [✓] Quyền thực thi: Administrator (Đủ quyền cấu hình card mạng Windows)")
 	} else {
 		fmt.Println(" [!] CẢNH BÁO: Đang chạy ở quyền User thông thường!")
-		fmt.Printf("     -> %s\n", runTip)
+		fmt.Println("     -> Bạn cần chạy với quyền 'Run as Administrator' để gán IP vào Windows.")
 	}
 	fmt.Println("------------------------------------------------------------------")
 }
@@ -95,18 +85,14 @@ func selectInterface(scanner *bufio.Scanner) (*NetInterface, error) {
 
 func handleAddIPv6(scanner *bufio.Scanner, isAdmin bool) {
 	if !isAdmin {
-		roleName := "Administrator"
-		if runtime.GOOS == "linux" {
-			roleName = "Root / Sudo"
-		}
-		fmt.Printf("\n❌ Bạn cần quyền %s để gán IP vào card mạng!\n", roleName)
-		ans := readLine(scanner, fmt.Sprintf("Bạn có muốn nâng quyền %s không? (y/n)", roleName), "y")
+		fmt.Println("\n❌ Bạn cần quyền Administrator để gán IP vào card mạng!")
+		ans := readLine(scanner, "Bạn có muốn nâng quyền Administrator (UAC) không? (y/n)", "y")
 		if strings.ToLower(ans) == "y" {
 			err := RelaunchAsAdmin()
 			if err != nil {
-				fmt.Printf("Lỗi kích hoạt quyền %s: %v\n", roleName, err)
+				fmt.Printf("Lỗi kích hoạt quyền Administrator: %v\n", err)
 			} else {
-				fmt.Printf("Đã gửi yêu cầu cấp quyền %s. Đang thoát cửa sổ này...\n", roleName)
+				fmt.Println("Đã gửi yêu cầu cấp quyền Administrator. Đang thoát cửa sổ này...")
 				os.Exit(0)
 			}
 		}
@@ -215,11 +201,7 @@ func handleAddIPv6(scanner *bufio.Scanner, isAdmin bool) {
 
 func handleRemoveIPv6(scanner *bufio.Scanner, isAdmin bool) {
 	if !isAdmin {
-		roleName := "Administrator"
-		if runtime.GOOS == "linux" {
-			roleName = "Root / Sudo"
-		}
-		fmt.Printf("\n❌ Bạn cần quyền %s để gỡ bỏ IP khỏi card mạng!\n", roleName)
+		fmt.Println("\n❌ Bạn cần quyền Administrator để gỡ bỏ IP khỏi card mạng!")
 		return
 	}
 
@@ -326,12 +308,91 @@ func startProxyWithIPs(scanner *bufio.Scanner, ips []net.IP) {
 	}
 }
 
-func handleProxyMenu(scanner *bufio.Scanner) {
+func handleDynamicRollingProxy(scanner *bufio.Scanner, isAdmin bool) {
+	if !isAdmin {
+		fmt.Println("\n❌ Bạn cần quyền Administrator để tự động gán và xoay IP trên card mạng!")
+		return
+	}
+
+	fmt.Println("\n==================================================================")
+	fmt.Println("    🔄 CHẾ ĐỘ DYNAMIC ROLLING PROXY (XOAY CUỐN CHIẾU)")
+	fmt.Println("   Duy trì cố định ~200 IP trên card, tự động xoay liên tục")
+	fmt.Println("   👉 Không làm nghẽn bảng định tuyến Windows, không lag máy!")
+	fmt.Println("==================================================================")
+
+	iface, err := selectInterface(scanner)
+	if err != nil {
+		fmt.Println("❌ Lỗi chọn card mạng:", err)
+		return
+	}
+
+	detectedPrefix := DetectGlobalPrefix(*iface)
+	prefixPrompt := "👉 Nhập IPv6 Prefix (vd: 2402:800:xxxx:xxxx::/64)"
+	prefixStr := readLine(scanner, prefixPrompt, detectedPrefix)
+	if prefixStr == "" {
+		fmt.Println("❌ Prefix không được để trống!")
+		return
+	}
+
+	ipNet, err := ParsePrefix(prefixStr)
+	if err != nil {
+		fmt.Printf("❌ Prefix không hợp lệ: %v\n", err)
+		return
+	}
+
+	poolSizeStr := readLine(scanner, "👉 Số IP duy trì trong Pool trên card (Khuyên dùng: 200 cho ~200 luồng)", "200")
+	poolSize, err := strconv.Atoi(poolSizeStr)
+	if err != nil || poolSize <= 0 {
+		poolSize = 200
+	}
+
+	batchStr := readLine(scanner, "👉 Số IP xoay mới mỗi đợt", "30")
+	batch, err := strconv.Atoi(batchStr)
+	if err != nil || batch <= 0 {
+		batch = 30
+	}
+
+	intervalStr := readLine(scanner, "👉 Chu kỳ tự động xoay (giây)", "30")
+	intervalSec, err := strconv.Atoi(intervalStr)
+	if err != nil || intervalSec <= 0 {
+		intervalSec = 30
+	}
+
+	portStr := readLine(scanner, "👉 Cổng HTTP/HTTPS Proxy", "10808")
+	port, err := strconv.Atoi(portStr)
+	if err != nil || port <= 0 || port > 65535 {
+		port = 10808
+	}
+
+	pool := NewRollingPool(iface.Name, ipNet, poolSize, batch, time.Duration(intervalSec)*time.Second)
+	if err := pool.Start(); err != nil {
+		fmt.Printf("❌ Lỗi khởi tạo Dynamic Pool: %v\n", err)
+		return
+	}
+
+	proxy := NewDynamicRotatingProxy(pool, port)
+	if err := proxy.Start(); err != nil {
+		fmt.Printf("❌ Lỗi khởi chạy proxy: %v\n", err)
+		pool.Stop()
+	}
+}
+
+func handleProxyMenu(scanner *bufio.Scanner, isAdmin bool) {
+	fmt.Println("\n📋 Chọn chế độ Proxy Server:")
+	fmt.Println("  [1] 🔄 Dynamic Rolling Proxy (Tự động gán & xoay cuốn chiếu 200 IPs - Khuyên dùng cho đa luồng, không lag)")
+	fmt.Println("  [2] 📌 Proxy tĩnh từ danh sách IP đã gán trước đó hoặc file .txt")
+
+	modeChoice := readLine(scanner, "👉 Chọn chế độ (1-2)", "1")
+	if modeChoice == "1" {
+		handleDynamicRollingProxy(scanner, isAdmin)
+		return
+	}
+
 	records, err := LoadAssignedRecords()
 	var availableIPs []net.IP
 
 	if err == nil && len(records) > 0 {
-		fmt.Println("\n📋 Chọn nguồn danh sách IPv6 để làm Proxy:")
+		fmt.Println("\n📋 Chọn nguồn danh sách IPv6 để làm Proxy tĩnh:")
 		for i, r := range records {
 			fmt.Printf("  [%d] Dải %s (%d IPs) trên card %s\n", i+1, r.Prefix, len(r.IPs), r.Interface)
 		}
@@ -461,16 +522,16 @@ func handleGenerateOnly(scanner *bufio.Scanner) {
 
 func main() {
 	defaultIface := "Wi-Fi"
-	if runtime.GOOS == "linux" {
-		defaultIface = "eth0"
-	}
 
 	// Parse CLI flags for automated/headless usage
-	actionFlag := flag.String("action", "", "Chức năng thực thi [add|delete|proxy|generate|test]")
-	ifaceFlag := flag.String("iface", defaultIface, "Tên card mạng (vd: Wi-Fi, Ethernet trên Windows; eth0, ens3 trên Linux)")
+	actionFlag := flag.String("action", "", "Chức năng thực thi [add|delete|proxy|dynamic-proxy|generate|test]")
+	ifaceFlag := flag.String("iface", defaultIface, "Tên card mạng Windows (vd: Wi-Fi, Ethernet)")
 	prefixFlag := flag.String("prefix", "", "IPv6 Prefix (vd: 2402:800:1234:5678::/64)")
 	countFlag := flag.Int("count", 50, "Số lượng IPv6 cần sinh")
 	proxyPortFlag := flag.Int("proxy-port", 10808, "Cổng Local Proxy")
+	poolSizeFlag := flag.Int("pool-size", 200, "Số lượng IP duy trì trong Dynamic Pool (cho đa luồng)")
+	batchFlag := flag.Int("batch", 30, "Số lượng IP xoay mới mỗi đợt")
+	intervalFlag := flag.Int("interval", 30, "Chu kỳ xoay (giây)")
 	outputFlag := flag.String("out", "ipv6_output.txt", "File xuất kết quả")
 	flag.Parse()
 
@@ -492,11 +553,7 @@ func main() {
 
 		case "add":
 			if !isAdmin {
-				roleName := "Administrator"
-				if runtime.GOOS == "linux" {
-					roleName = "Root / Sudo"
-				}
-				fmt.Printf("Cần quyền %s để gán IP!\n", roleName)
+				fmt.Println("Cần quyền Administrator để gán IP!")
 				os.Exit(1)
 			}
 			ipNet, err := ParsePrefix(*prefixFlag)
@@ -524,6 +581,25 @@ func main() {
 			p := NewRotatingProxy(ips, *proxyPortFlag)
 			_ = p.Start()
 			return
+
+		case "dynamic-proxy", "rolling-proxy":
+			if !isAdmin {
+				fmt.Println("Cần quyền Administrator để chạy dynamic rolling proxy!")
+				os.Exit(1)
+			}
+			ipNet, err := ParsePrefix(*prefixFlag)
+			if err != nil {
+				fmt.Printf("Lỗi prefix: %v\n", err)
+				os.Exit(1)
+			}
+			pool := NewRollingPool(*ifaceFlag, ipNet, *poolSizeFlag, *batchFlag, time.Duration(*intervalFlag)*time.Second)
+			if err := pool.Start(); err != nil {
+				fmt.Printf("Lỗi khởi tạo pool: %v\n", err)
+				os.Exit(1)
+			}
+			p := NewDynamicRotatingProxy(pool, *proxyPortFlag)
+			_ = p.Start()
+			return
 		}
 	}
 
@@ -532,17 +608,13 @@ func main() {
 
 	for {
 		printBanner(isAdmin)
-		fmt.Println("  [1] ⚡ Sinh & Gán danh sách IPv6 vào Card mạng")
+		fmt.Println("  [1] ⚡ Sinh & Gán danh sách IPv6 vào Card mạng (Tĩnh)")
 		fmt.Println("  [2] 🧹 Gỡ bỏ IPv6 đã gán (Xem lịch sử & Clean up)")
-		fmt.Println("  [3] 🚀 Khởi chạy Local Rotating Proxy Server (HTTP / SOCKS5)")
+		fmt.Println("  [3] 🔄 Khởi chạy Proxy Server (Có chế độ Dynamic Rolling Pool 200 IPs - Không lag máy)")
 		fmt.Println("  [4] 🧪 Kiểm tra kết nối Internet thực tế của IPv6")
 		fmt.Println("  [5] 📄 Chỉ sinh danh sách IPv6 ra file .txt (Không can thiệp card mạng)")
 		if !isAdmin {
-			relaunchPrompt := "Administrator (UAC)"
-			if runtime.GOOS == "linux" {
-				relaunchPrompt = "Root / Sudo"
-			}
-			fmt.Printf("  [9] 🔑 Khởi động lại chương trình với quyền %s\n", relaunchPrompt)
+			fmt.Println("  [9] 🔑 Khởi động lại chương trình với quyền Administrator (UAC)")
 		}
 		fmt.Println("  [0] 🚪 Thoát")
 		fmt.Println("------------------------------------------------------------------")
@@ -555,7 +627,7 @@ func main() {
 		case "2":
 			handleRemoveIPv6(scanner, isAdmin)
 		case "3":
-			handleProxyMenu(scanner)
+			handleProxyMenu(scanner, isAdmin)
 		case "4":
 			// Test current interface or assigned records
 			records, _ := LoadAssignedRecords()
