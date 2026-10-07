@@ -1,139 +1,103 @@
-# 🌐 IPv6 Rotator & Generator System (Go)
+# 🌐 IPv6 Rotator & Generator System (Golang)
 
-Hệ thống chuyên dụng viết bằng **Golang** được **tách biệt hoàn toàn thành 2 thư mục độc lập**:
-- 🪟 Thư mục **`windows/`**: Dành riêng 100% cho máy tính Windows (Source code Windows, script `.bat`, file `.exe`).
-- 🐧 Thư mục **`linux/`**: Dành riêng 100% cho VPS / Server Linux (Source code Linux, script `.sh`, dịch vụ systemd, binary Linux).
+Hệ thống chuyên dụng tối ưu cao viết bằng **Golang**, chia làm 2 nền tảng:
+- 🐧 **`linux/` (Khuyên Dùng Cho VPS)**: Chế độ **ANY-IP Kernel + `ndppd`** — **Không cần gán IP vào card mạng (0 IP rác)**, tự động xoay vô hạn 18 tỷ tỷ IPv6 trong dải `/64` theo từng request HTTP/SOCKS5. Chạy ngầm 24/7 dưới dạng `systemd service`.
+- 🪟 **`windows/` (Dành Cho Máy Cá Nhân Windows)**: Chế độ **Dynamic Rolling Pool** (xoay cuốn chiếu ~200 IP trong RAM qua `netsh`, không nghẽn mạng Windows) hoặc gán IPv6 tĩnh.
 
 ---
 
-## 📁 Cấu Trúc Thư Mục Tách Biệt Độc Lập
+## 📁 Cấu Trúc Dự Án
 
 ```text
 IPv6-Gen-System/
 │
-├── 🪟 windows/                      # MÃ NGUỒN & CÔNG CỤ DÀNH RIÊNG CHO WINDOWS
-│   ├── main.go                     # File chạy chính tối ưu cho Windows
-│   ├── network.go                  # Xử lý card mạng bằng netsh Windows
-│   ├── admin.go                    # Xử lý quyền UAC / Administrator Windows
-│   ├── pool.go                     # Chế độ Dynamic Rolling Pool (Xoay cuốn chiếu 200 IPs, không lag máy)
-│   ├── proxy.go                    # Local Rotating Proxy (HTTP 10808 / SOCKS5 10809)
-│   ├── generator.go                # Sinh ngẫu nhiên IPv6 theo dải prefix
-│   ├── tester.go                   # Kiểm tra kết nối outbound
-│   ├── config.go & network_common.go
-│   ├── go.mod                      # Module Go độc lập của Windows
-│   ├── Chay_Tool_Windows.bat       # Nhấp đúp chuột là chạy ngay (tự xin UAC)
-│   ├── build.bat                   # Script biên dịch lại ipv6-gen.exe
-│   ├── ipv6-gen.exe                # File thực thi Windows đã build sẵn
-│   └── HUONG_DAN_WINDOWS.md        # Hướng dẫn chi tiết cho Windows
+├── 🐧 linux/                         # DÀNH CHO VPS / SERVER LINUX (UBUNTU / DEBIAN / CENTOS)
+│   ├── main.go                      # Chạy chính với chế độ ANY-IP & Proxy
+│   ├── proxy.go                     # Rotating Proxy Server (HTTP: 10808, SOCKS5: 10809)
+│   ├── network.go & network_common.go
+│   ├── pool.go                      # Rolling Pool dự phòng
+│   ├── generator.go & tester.go
+│   ├── install-service.sh           # Script 1-click cài Proxy chạy ngầm 24/7 (systemd)
+│   ├── run.sh                       # Chạy tương tác qua Menu
+│   ├── build.sh                     # Script biên dịch trên Linux
+│   ├── ipv6-gen-linux               # File binary Linux biên dịch sẵn (Statically Linked)
+│   └── HUONG_DAN_LINUX.md           # 📖 TÀI LIỆU CHI TIẾT A-Z TRIỂN KHAI VPS (ANY-IP + ndppd)
 │
-├── 🐧 linux/                        # MÃ NGUỒN & CÔNG CỤ DÀNH RIÊNG CHO LINUX / VPS
-│   ├── main.go                     # File chạy chính tối ưu cho Linux
-│   ├── network.go                  # Xử lý card mạng bằng iproute2 kernel Linux
-│   ├── admin.go                    # Xử lý quyền root / sudo Linux
-│   ├── pool.go                     # Dynamic Rolling Pool cho Linux
-│   ├── proxy.go                    # Rotating Proxy Server
-│   ├── generator.go & tester.go & config.go
-│   ├── go.mod                      # Module Go độc lập của Linux
-│   ├── run.sh                      # Script 1-click chạy ngay (tự cấp quyền + sudo)
-│   ├── build.sh                    # Script biên dịch trên Linux
-│   ├── install-service.sh          # Cài dịch vụ chạy ngầm 24/7 (systemd)
-│   ├── ipv6-gen-linux              # File binary Linux đã build sẵn
-│   └── HUONG_DAN_LINUX.md          # Hướng dẫn chi tiết cho VPS Linux
+├── 🪟 windows/                       # DÀNH CHO MÁY TÍNH WINDOWS
+│   ├── main.go                      # Giao diện điều khiển Windows
+│   ├── network.go                   # Tương tác netsh Windows
+│   ├── admin.go                     # Tự động xin quyền Administrator (UAC)
+│   ├── pool.go                      # Dynamic Rolling Pool 200 IPs
+│   ├── proxy.go                     # Proxy nội bộ máy Windows
+│   ├── Chay_Tool_Windows.bat        # 1-Click mở tool trên Windows
+│   ├── build.bat                    # Biên dịch lại ipv6-gen.exe
+│   └── HUONG_DAN_WINDOWS.md         # Hướng dẫn chi tiết cho Windows
 │
-├── build_all.bat                   # Biên dịch tự động toàn bộ cả 2 bản
+├── build_all.bat                    # Script tự động biên dịch cả 2 bản cùng lúc
 └── README.md
 ```
 
 ---
 
-## 🪟 1. Hướng Dẫn Sử Dụng Bản Windows
+## 🐧 1. Tóm Tắt Triển Khai Trên Linux VPS (ANY-IP + ndppd)
 
-### Cách chạy nhanh nhất:
-1. Vào thư mục `release/windows/` (hoặc ngay tại thư mục gốc).
-2. Nhấp đúp chuột vào file **`Chay_Tool_Windows.bat`**.
-3. Cửa sổ UAC của Windows sẽ bật lên -> Chọn **Yes** để cấp quyền Administrator.
-4. Menu điều khiển sẽ hiện lên trực quan:
-   - Bấm `[1]` để Sinh & Gán danh sách IPv6 vào Card mạng (`Wi-Fi` hoặc `Ethernet`).
-   - Bấm `[3]` để Bật Rotating Proxy Server (`HTTP: 10808`, `SOCKS5: 10809`).
-   - Bấm `[4]` để Kiểm tra kết nối Internet thực tế của các IPv6.
-   - Bấm `[2]` để Gỡ bỏ sạch sẽ các IPv6 đã gán.
+👉 **Xem hướng dẫn chi tiết từ A-Z tại:** [linux/HUONG_DAN_LINUX.md](linux/HUONG_DAN_LINUX.md)
 
-👉 *Xem hướng dẫn chi tiết tại:* [release/windows/HUONG_DAN_WINDOWS.md](release/windows/HUONG_DAN_WINDOWS.md)
-
----
-
-## 🐧 2. Hướng Dẫn Sử Dụng Bản Linux / VPS
-
-File thực thi `ipv6-gen-linux` được biên dịch tĩnh (**Statically Linked**), tương thích 100% với **Ubuntu, Debian, CentOS, AlmaLinux, Rocky Linux, Alpine...**
-
-### Cách chạy nhanh nhất:
-1. Tải thư mục `release/linux/` lên VPS (hoặc copy file `ipv6-gen-linux` và `run.sh`).
-2. Chạy lệnh:
+### Tóm tắt 4 bước nhanh:
+1. **Cài đặt `ndppd`** (để tự động trả lời NDP cho toàn bộ dải `/64`):
    ```bash
-   chmod +x run.sh
-   ./run.sh
+   apt-get update && apt-get install -y ndppd
    ```
-   *(Script sẽ tự động gọi sudo và cấu hình kernel sysctl để gán không giới hạn IPv6).*
+   Cấu hình `/etc/ndppd.conf`:
+   ```conf
+   proxy eth0 {
+      router yes
+      timeout 500
+      ttl 30000
+      rule 2403:6a40:0:15::/64 {
+         static
+      }
+   }
+   ```
+   Khởi động: `systemctl restart ndppd && systemctl enable ndppd`
 
-### Chạy Proxy ngầm 24/7 trên VPS (Không sợ tắt khi ngắt SSH):
-Chạy script cài đặt dịch vụ nền:
-```bash
-sudo ./install-service.sh
-```
-- Dịch vụ `ipv6-proxy.service` sẽ được cài đặt và tự động khởi động cùng hệ thống.
-- Quản lý dịch vụ:
-  - `systemctl status ipv6-proxy` (Xem trạng thái)
-  - `journalctl -u ipv6-proxy -f` (Xem log xoay IP trực tiếp)
-  - `sudo systemctl restart ipv6-proxy` (Khởi động lại)
-  - `sudo systemctl stop ipv6-proxy` (Dừng)
+2. **Cấu hình Kernel**:
+   ```bash
+   sysctl -w net.ipv6.ip_nonlocal_bind=1
+   sysctl -w net.ipv6.conf.all.forwarding=1
+   ip -6 route add local 2403:6a40:0:15::/64 dev lo
+   ```
 
-👉 *Xem hướng dẫn chi tiết tại:* [release/linux/HUONG_DAN_LINUX.md](release/linux/HUONG_DAN_LINUX.md)
+3. **Cài dịch vụ Proxy ngầm 24/7**:
+   ```bash
+   cd linux
+   chmod +x run.sh install-service.sh ipv6-gen-linux
+   ./install-service.sh
+   ```
 
----
-
-## 🔌 Tích Hợp Proxy Vào Các Công Cụ
-
-Sau khi bật chức năng **[3] Local Rotating Proxy Server** (hoặc chạy service):
-- **HTTP / HTTPS Proxy**: `http://127.0.0.1:10808`
-- **SOCKS5 Proxy**: `socks5://127.0.0.1:10809`
-
-### 1. Dùng trong Python (`requests`):
-```python
-import requests
-
-proxies = {
-    'http': 'http://127.0.0.1:10808',
-    'https': 'http://127.0.0.1:10808',
-}
-
-for i in range(5):
-    res = requests.get('https://api64.ipify.org?format=json', proxies=proxies)
-    print(f"Lần {i+1}: {res.json()['ip']}")
-```
-
-### 2. Dùng trong cURL:
-```bash
-curl -x http://127.0.0.1:10808 https://api64.ipify.org
-```
-
-### 3. Dùng trong Antidetect Browser (AdsPower, GoLogin, Dolphin...):
-- Chọn loại proxy: `HTTP` hoặc `SOCKS5`
-- Host: `127.0.0.1`
-- Port: `10808` (HTTP) hoặc `10809` (SOCKS5)
+4. **Mở Firewall**:
+   ```bash
+   ufw allow 10808/tcp && ufw allow 10809/tcp
+   ```
 
 ---
 
-## 🔨 Tự Biên Dịch Lại (Rebuild)
+## 🪟 2. Sử Dụng Proxy Trên Máy Windows
 
-Nếu bạn thay đổi mã nguồn và muốn build lại cả 2 bản:
-- Trên Windows: Chạy file `build.bat`
-- Trên Linux: Chạy file `./build.sh`
+Sau khi VPS đã chạy Proxy:
+* **Host / IP:** `<IP_VPS>` (Ví dụ: `42.96.15.130`)
+* **HTTP Proxy Port:** `10808`
+* **SOCKS5 Proxy Port:** `10809`
 
-Lệnh build thủ công:
-```bash
-# Bản Windows
-CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -ldflags="-s -w" -o release/windows/ipv6-gen.exe .
-
-# Bản Linux
-CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags="-s -w" -o release/linux/ipv6-gen-linux .
+### Test trên PowerShell:
+```powershell
+curl.exe -s -x http://<IP_VPS>:10808 https://api64.ipify.org
+curl.exe -s -x socks5h://<IP_VPS>:10809 https://api64.ipify.org
 ```
+*Mỗi lần gọi sẽ ra một IPv6 hoàn toàn mới xuất phát từ VPS!*
+
+### Dùng trong Antidetect Browser (AdsPower, GoLogin, Hidemyacc...):
+* Chọn loại: `HTTP` hoặc `SOCKS5`
+* Host: `<IP_VPS>`
+* Port: `10808` hoặc `10809`
+* User/Pass: Để trống.
