@@ -109,6 +109,22 @@ func GenerateIPv6List(ipNet *net.IPNet, count int, mode IPGenerationMode) ([]net
 	return result, nil
 }
 
+// GenerateSingleRandomIPv6 generates a single random IPv6 address on-the-fly under the subnet.
+func GenerateSingleRandomIPv6(ipNet *net.IPNet) net.IP {
+	baseIP := ipNet.IP.To16()
+	newIP := make(net.IP, 16)
+	copy(newIP, baseIP)
+
+	randomBytes := make([]byte, 16)
+	_, _ = rand.Read(randomBytes)
+
+	for i := 0; i < 16; i++ {
+		maskByte := ipNet.Mask[i]
+		newIP[i] = (baseIP[i] & maskByte) | (randomBytes[i] & ^maskByte)
+	}
+	return newIP
+}
+
 // SaveIPListToFile saves IP addresses to a text file (one IP per line)
 func SaveIPListToFile(filename string, ips []net.IP) error {
 	var builder strings.Builder

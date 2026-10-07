@@ -17,9 +17,6 @@ if [ -z "$PREFIX" ]; then
     exit 1
 fi
 
-read -p "So luong IP duy tri trong pool [200]: " POOL_SIZE
-POOL_SIZE=${POOL_SIZE:-200}
-
 read -p "Cong HTTP Proxy [10808]: " PORT
 PORT=${PORT:-10808}
 
@@ -27,13 +24,13 @@ SERVICE_FILE="/etc/systemd/system/ipv6-proxy.service"
 
 cat <<EOF > "$SERVICE_FILE"
 [Unit]
-Description=IPv6 Rotating Proxy Service
+Description=IPv6 Any-IP Rotating Proxy Service (Zero IP assigned)
 After=network.target
 
 [Service]
 Type=simple
 WorkingDirectory=$DIR
-ExecStart=$DIR/ipv6-gen-linux -action dynamic-proxy -iface $IFACE -prefix $PREFIX -pool-size $POOL_SIZE -proxy-host 0.0.0.0 -proxy-port $PORT
+ExecStart=$DIR/ipv6-gen-linux -action any-proxy -iface $IFACE -prefix $PREFIX -proxy-host 0.0.0.0 -proxy-port $PORT
 Restart=always
 RestartSec=5
 

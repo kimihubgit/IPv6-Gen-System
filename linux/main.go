@@ -379,13 +379,64 @@ func handleDynamicRollingProxy(scanner *bufio.Scanner, isAdmin bool) {
 	}
 }
 
+func handleAnyIPProxy(scanner *bufio.Scanner, isAdmin bool) {
+	if !isAdmin {
+		fmt.Println("\n❌ Bạn cần quyền Root / Sudo để cấu hình kernel Linux!")
+		return
+	}
+
+	fmt.Println("\n==================================================================")
+	fmt.Println("    🚀 CHẾ ĐỘ ANY-IP KERNEL (ĐẶC QUYỀN DUY NHẤT TRÊN LINUX)")
+	fmt.Println("   - KHÔNG CẦN GÁN BẤT KỲ IP NÀO VÀO CARD MẠNG (0 IP rác)!")
+	fmt.Println("   - Mỗi request HTTP/SOCKS5 tự sinh 1 IPv6 mới toanh từ dải /64")
+	fmt.Println("   - Vô hạn hàng triệu IP, máy chủ siêu nhẹ, không bao giờ nghẽn mạng!")
+	fmt.Println("==================================================================")
+
+	iface, err := selectInterface(scanner)
+	if err != nil {
+		fmt.Println("❌ Lỗi chọn card mạng:", err)
+		return
+	}
+
+	detectedPrefix := DetectGlobalPrefix(*iface)
+	prefixPrompt := "👉 Nhập IPv6 Prefix (vd: 2402:800:xxxx:xxxx::/64)"
+	prefixStr := readLine(scanner, prefixPrompt, detectedPrefix)
+	if prefixStr == "" {
+		fmt.Println("❌ Prefix không được để trống!")
+		return
+	}
+
+	ipNet, err := ParsePrefix(prefixStr)
+	if err != nil {
+		fmt.Printf("❌ Prefix không hợp lệ: %v\n", err)
+		return
+	}
+
+	host := readLine(scanner, "👉 Địa chỉ lắng nghe (0.0.0.0 để máy Windows bên ngoài kết nối được)", "0.0.0.0")
+	portStr := readLine(scanner, "👉 Cổng HTTP/HTTPS Proxy", "10808")
+	port, err := strconv.Atoi(portStr)
+	if err != nil || port <= 0 || port > 65535 {
+		port = 10808
+	}
+
+	proxy := NewAnyIPProxy(iface.Name, ipNet, host, port)
+	if err := proxy.Start(); err != nil {
+		fmt.Printf("❌ Lỗi khởi chạy proxy: %v\n", err)
+	}
+}
+
 func handleProxyMenu(scanner *bufio.Scanner, isAdmin bool) {
 	fmt.Println("\n📋 Chọn chế độ Proxy Server:")
-	fmt.Println("  [1] 🔄 Dynamic Rolling Proxy (Tự động gán & xoay cuốn chiếu 200 IPs - Khuyên dùng cho đa luồng, không lag)")
-	fmt.Println("  [2] 📌 Proxy tĩnh từ danh sách IP đã gán trước đó hoặc file .txt")
+	fmt.Println("  [1] 🚀 ANY-IP Kernel Proxy (Khuyên dùng #1: KHÔNG gán IP vào card, mỗi request tự sinh 1 IPv6 mới toanh, siêu nhẹ)")
+	fmt.Println("  [2] 🔄 Dynamic Rolling Proxy (Xoay cuốn chiếu 200 IPs trong pool)")
+	fmt.Println("  [3] 📌 Proxy tĩnh từ danh sách IP đã gán trước đó hoặc file .txt")
 
-	modeChoice := readLine(scanner, "👉 Chọn chế độ (1-2)", "1")
+	modeChoice := readLine(scanner, "👉 Chọn chế độ (1-3)", "1")
 	if modeChoice == "1" {
+		handleAnyIPProxy(scanner, isAdmin)
+		return
+	}
+	if modeChoice == "2" {
 		handleDynamicRollingProxy(scanner, isAdmin)
 		return
 	}
@@ -582,6 +633,20 @@ func main() {
 				}
 			}
 			p := NewRotatingProxy(ips, *proxyHostFlag, *proxyPortFlag)
+			_ = p.Start()
+			return
+
+		case "any-proxy", "any-ip", "any":
+			if !isAdmin {
+				fmt.Println("Cần quyền Root / Sudo để chạy ANY-IP proxy!")
+				os.Exit(1)
+			}
+			ipNet, err := ParsePrefix(*prefixFlag)
+			if err != nil {
+				fmt.Printf("Lỗi prefix: %v\n", err)
+				os.Exit(1)
+			}
+			p := NewAnyIPProxy(*ifaceFlag, ipNet, *proxyHostFlag, *proxyPortFlag)
 			_ = p.Start()
 			return
 

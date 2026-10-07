@@ -9,7 +9,9 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"os/exec"
 	"os/signal"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"syscall"
@@ -18,6 +20,8 @@ import (
 
 // RotatingProxy holds the list of local IPv6 addresses to rotate through
 type RotatingProxy struct {
+	anyNet      *net.IPNet   // If set, ANY-IP mode (On-the-fly random IPv6 per connection - 0 IP gán card mạng)
+	anyIface    string
 	IPs         []net.IP
 	host        string
 	port        int
@@ -26,6 +30,40 @@ type RotatingProxy struct {
 	socksServer net.Listener
 	mu          sync.RWMutex
 	pool        *RollingPool // If set, delegates IP rotation to dynamic rolling pool
+}
+
+// SetupAnyIP configures Linux kernel route and sysctl for on-the-fly nonlocal binding
+func SetupAnyIP(iface string, ipNet *net.IPNet) error {
+	_ = exec.Command("sysctl", "-w", "net.ipv6.ip_nonlocal_bind=1").Run()
+	prefixStr := ipNet.String()
+	cmd := exec.Command("ip", "-6", "route", "add", "local", prefixStr, "dev", iface)
+	out, err := cmd.CombinedOutput()
+	if err != nil && !strings.Contains(string(out), "File exists") {
+		// Fallback to lo
+		_ = exec.Command("ip", "-6", "route", "add", "local", prefixStr, "dev", "lo").Run()
+	}
+	return nil
+}
+
+// TeardownAnyIP removes the local route on stop
+func TeardownAnyIP(iface string, ipNet *net.IPNet) {
+	prefixStr := ipNet.String()
+	_ = exec.Command("ip", "-6", "route", "del", "local", prefixStr, "dev", iface).Run()
+	_ = exec.Command("ip", "-6", "route", "del", "local", prefixStr, "dev", "lo").Run()
+}
+
+// NewAnyIPProxy creates a new rotating proxy in ANY-IP mode (0 IPs assigned to card!)
+func NewAnyIPProxy(iface string, ipNet *net.IPNet, host string, port int) *RotatingProxy {
+	if host == "" {
+		host = "0.0.0.0"
+	}
+	_ = SetupAnyIP(iface, ipNet)
+	return &RotatingProxy{
+		anyNet:   ipNet,
+		anyIface: iface,
+		host:     host,
+		port:     port,
+	}
 }
 
 // NewRotatingProxy creates a new rotating proxy instance with static IPs
@@ -52,8 +90,11 @@ func NewDynamicRotatingProxy(pool *RollingPool, host string, port int) *Rotating
 	}
 }
 
-// PickIPv6 picks an IPv6 from the list or pool using round-robin
+// PickIPv6 picks an IPv6 from the list or pool using round-robin or ANY-IP
 func (p *RotatingProxy) PickIPv6() net.IP {
+	if p.anyNet != nil {
+		return GenerateSingleRandomIPv6(p.anyNet)
+	}
 	if p.pool != nil {
 		return p.pool.PickIPv6()
 	}
@@ -66,8 +107,11 @@ func (p *RotatingProxy) PickIPv6() net.IP {
 	return p.IPs[idx]
 }
 
-// RandomIPv6 picks a random IPv6 from the list or pool
+// RandomIPv6 picks a random IPv6 from the list or pool or ANY-IP
 func (p *RotatingProxy) RandomIPv6() net.IP {
+	if p.anyNet != nil {
+		return GenerateSingleRandomIPv6(p.anyNet)
+	}
 	if p.pool != nil {
 		return p.pool.RandomIPv6()
 	}
@@ -132,18 +176,23 @@ func (p *RotatingProxy) Start() error {
 	if p.host == "0.0.0.0" {
 		fmt.Printf("   💡 Từ máy Windows, kết nối qua: http://<IP_VPS>:%d hoặc socks5://<IP_VPS>:%d\n", p.port, p.port+1)
 	}
-	if p.pool != nil {
+	if p.anyNet != nil {
+		fmt.Printf("   ⚡ Chế độ: 🚀 ANY-IP KERNEL (0 IP gán card mạng, mỗi request tự sinh 1 IPv6 mới toanh từ %s)\n", p.anyNet.String())
+	} else if p.pool != nil {
 		fmt.Printf("   ⚡ Chế độ: Dynamic Rolling Pool (%d IPs duy trì, tự động xoay liên tục)\n", p.pool.poolSize)
 	} else {
 		fmt.Printf("   ⚡ Tổng số IPv6 xoay vòng: %d IPs\n", len(p.IPs))
 	}
-	fmt.Printf("   Nhấn Ctrl+C để dừng Proxy Server (tự động dọn sạch card mạng).\n\n")
+	fmt.Printf("   Nhấn Ctrl+C để dừng Proxy Server.\n\n")
 
 	return p.httpServer.ListenAndServe()
 }
 
 // Stop gracefully stops the proxy servers and any attached rolling pool
 func (p *RotatingProxy) Stop() {
+	if p.anyNet != nil && p.anyIface != "" {
+		TeardownAnyIP(p.anyIface, p.anyNet)
+	}
 	if p.httpServer != nil {
 		p.httpServer.Shutdown(context.Background())
 	}
