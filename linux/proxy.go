@@ -217,16 +217,22 @@ func (p *RotatingProxy) dialTarget(target string) (net.Conn, net.IP, error) {
 		// 1. Try tcp6 first with rotated IPv6
 		conn, err := dialer.Dial("tcp6", target)
 		if err == nil {
+			log.Printf("[SUCCESS IPv6] %s -> %s", outIP, target)
 			return conn, outIP, nil
 		}
+		log.Printf("[tcp6 failed] outIP=%s, target=%s, err=%v", outIP, target, err)
+
 		// 2. Try generic tcp with rotated IPv6
 		conn, err = dialer.Dial("tcp", target)
 		if err == nil {
+			log.Printf("[SUCCESS generic TCP] %s -> %s", outIP, target)
 			return conn, outIP, nil
 		}
+		log.Printf("[generic tcp failed] outIP=%s, target=%s, err=%v", outIP, target, err)
 	}
 
 	// 3. Fallback to default dialer (if destination is IPv4-only)
+	log.Printf("[FALLBACK to IPv4] target=%s", target)
 	var fallbackDialer net.Dialer
 	fallbackDialer.Timeout = 10 * time.Second
 	conn, err := fallbackDialer.Dial("tcp", target)
