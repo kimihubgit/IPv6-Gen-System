@@ -20,7 +20,7 @@ import (
 
 // RotatingProxy holds the list of local IPv6 addresses to rotate through
 type RotatingProxy struct {
-	anyNet      *net.IPNet   // If set, ANY-IP mode (On-the-fly random IPv6 per connection - 0 IP gán card mạng)
+	anyNet      *net.IPNet // If set, ANY-IP mode (On-the-fly random IPv6 per connection - 0 IP gán card mạng)
 	anyIface    string
 	IPs         []net.IP
 	host        string
@@ -36,17 +36,20 @@ type RotatingProxy struct {
 func SetupAnyIP(iface string, ipNet *net.IPNet) error {
 	_ = exec.Command("sysctl", "-w", "net.ipv6.ip_nonlocal_bind=1").Run()
 	prefixStr := ipNet.String()
-	// Add local route to lo and iface
-	_ = exec.Command("ip", "-6", "route", "add", "local", prefixStr, "dev", "lo").Run()
-	_ = exec.Command("ip", "-6", "route", "add", "local", prefixStr, "dev", iface).Run()
+	cmd := exec.Command("ip", "-6", "route", "add", "local", prefixStr, "dev", iface)
+	out, err := cmd.CombinedOutput()
+	if err != nil && !strings.Contains(string(out), "File exists") {
+		// Fallback to lo
+		_ = exec.Command("ip", "-6", "route", "add", "local", prefixStr, "dev", "lo").Run()
+	}
 	return nil
 }
 
 // TeardownAnyIP removes the local route on stop
 func TeardownAnyIP(iface string, ipNet *net.IPNet) {
 	prefixStr := ipNet.String()
-	_ = exec.Command("ip", "-6", "route", "del", "local", prefixStr, "dev", "lo").Run()
 	_ = exec.Command("ip", "-6", "route", "del", "local", prefixStr, "dev", iface).Run()
+	_ = exec.Command("ip", "-6", "route", "del", "local", prefixStr, "dev", "lo").Run()
 }
 
 // NewAnyIPProxy creates a new rotating proxy in ANY-IP mode (0 IPs assigned to card!)
@@ -211,7 +214,7 @@ func (p *RotatingProxy) dialTarget(target string) (net.Conn, net.IP, error) {
 		dialer.LocalAddr = &net.TCPAddr{
 			IP: outIP,
 		}
-		// 1. Try tcp6 with rotated IPv6
+		// 1. Try tcp6 first with rotated IPv6
 		conn, err := dialer.Dial("tcp6", target)
 		if err == nil {
 			return conn, outIP, nil
@@ -221,25 +224,19 @@ func (p *RotatingProxy) dialTarget(target string) (net.Conn, net.IP, error) {
 		if err == nil {
 			return conn, outIP, nil
 		}
-		log.Printf("[IPv6 Dial Warning] target=%s, outIP=%s, err=%v -> Thử kết nối trực tiếp (IPv4 fallback)...", target, outIP, err)
 	}
 
-	// 3. Fallback to default dialer (IPv4 or default route)
+	// 3. Fallback to default dialer (if destination is IPv4-only)
 	var fallbackDialer net.Dialer
 	fallbackDialer.Timeout = 10 * time.Second
 	conn, err := fallbackDialer.Dial("tcp", target)
-	if err != nil {
-		log.Printf("[Dial Target Failed] target=%s, error=%v", target, err)
-		return nil, nil, err
-	}
-	return conn, nil, nil
+	return conn, nil, err
 }
 
 // handleTunneling handles HTTPS CONNECT method
 func (p *RotatingProxy) handleTunneling(w http.ResponseWriter, r *http.Request) {
 	destConn, outIP, err := p.dialTarget(r.Host)
 	if err != nil {
-		log.Printf("[HTTPS CONNECT FAILED] Host=%s, Error=%v", r.Host, err)
 		http.Error(w, err.Error(), http.StatusServiceUnavailable)
 		return
 	}
@@ -271,21 +268,15 @@ func (p *RotatingProxy) handleTunneling(w http.ResponseWriter, r *http.Request) 
 
 // handleHTTP handles plain HTTP proxy requests
 func (p *RotatingProxy) handleHTTP(w http.ResponseWriter, r *http.Request) {
-	destHost := r.URL.Host
-	if !strings.Contains(destHost, ":") {
-		if r.URL.Scheme == "https" {
-			destHost += ":443"
-		} else {
-			destHost += ":80"
-		}
-	}
+	outIP := p.PickIPv6()
 	transport := &http.Transport{
 		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
-			conn, outIP, err := p.dialTarget(addr)
+			var dialer net.Dialer
+			dialer.Timeout = 10 * time.Second
 			if outIP != nil {
-				log.Printf("[HTTP %s] %s -> Outbound IPv6: %s", r.Method, r.URL.Host, outIP.String())
+				dialer.LocalAddr = &net.TCPAddr{IP: outIP}
 			}
-			return conn, err
+			return dialer.DialContext(ctx, network, addr)
 		},
 	}
 
@@ -298,11 +289,14 @@ func (p *RotatingProxy) handleHTTP(w http.ResponseWriter, r *http.Request) {
 
 	resp, err := transport.RoundTrip(outReq)
 	if err != nil {
-		log.Printf("[HTTP %s FAILED] URL=%s, Error=%v", r.Method, r.URL.String(), err)
 		http.Error(w, err.Error(), http.StatusBadGateway)
 		return
 	}
 	defer resp.Body.Close()
+
+	if outIP != nil {
+		log.Printf("[HTTP %s] %s -> Outbound IPv6: %s", r.Method, r.URL.Host, outIP.String())
+	}
 
 	for k, vv := range resp.Header {
 		for _, v := range vv {
