@@ -4,7 +4,9 @@ import (
 	"bufio"
 	"flag"
 	"fmt"
+	"io"
 	"net"
+	"net/http"
 	"os"
 	"strconv"
 	"strings"
@@ -573,16 +575,83 @@ func handleGenerateOnly(scanner *bufio.Scanner) {
 	}
 }
 
+func getPublicIPv4() string {
+	client := http.Client{Timeout: 4 * time.Second}
+	resp, err := client.Get("https://api.ipify.org")
+	if err == nil {
+		defer resp.Body.Close()
+		data, err := io.ReadAll(resp.Body)
+		if err == nil && len(data) > 0 {
+			return strings.TrimSpace(string(data))
+		}
+	}
+	// Fallback to interfaces
+	ifaces, _ := net.Interfaces()
+	for _, iface := range ifaces {
+		if iface.Flags&net.FlagLoopback != 0 {
+			continue
+		}
+		addrs, _ := iface.Addrs()
+		for _, addr := range addrs {
+			if ipnet, ok := addr.(*net.IPNet); ok && ipnet.IP.To4() != nil {
+				return ipnet.IP.String()
+			}
+		}
+	}
+	return "127.0.0.1"
+}
+
+func runProxyHubServer(iface string, prefixStr string, webPort int, dataFile string) {
+	if prefixStr == "" {
+		fmt.Println("❌ Bạn cần cung cấp prefix (vd: -prefix 2403:6a40:0:15::/64)")
+		os.Exit(1)
+	}
+	ipNet, err := ParsePrefix(prefixStr)
+	if err != nil {
+		fmt.Printf("❌ Prefix không hợp lệ: %v\n", err)
+		os.Exit(1)
+	}
+
+	publicIP := getPublicIPv4()
+	store, err := NewProxyStore(dataFile)
+	if err != nil {
+		fmt.Printf("❌ Lỗi khởi tạo data store: %v\n", err)
+		os.Exit(1)
+	}
+
+	manager := NewMultiProxyManager(iface, ipNet, store)
+	if err := manager.Start(); err != nil {
+		fmt.Printf("❌ Lỗi khởi động Proxy Manager: %v\n", err)
+		os.Exit(1)
+	}
+
+	webServer := NewWebServer(webPort, prefixStr, publicIP, manager, store)
+	fmt.Printf("\n==================================================================\n")
+	fmt.Printf("   🌐 IPV6 PROXY HUB SERVER ĐANG CHẠY (ANY-IP MULTI-PORT)\n")
+	fmt.Printf("   - Subnet Prefix:       %s\n", prefixStr)
+	fmt.Printf("   - VPS Public IPv4:     %s\n", publicIP)
+	fmt.Printf("   - Web Admin Dashboard:  http://%s:%d\n", publicIP, webPort)
+	fmt.Printf("   - Tài khoản mặc định:  admin / admin123\n")
+	fmt.Printf("==================================================================\n\n")
+
+	if err := webServer.Start(); err != nil {
+		fmt.Printf("❌ Lỗi Web Server: %v\n", err)
+		manager.Stop()
+	}
+}
+
 func main() {
 	defaultIface := "eth0"
 
 	// Parse CLI flags for automated/headless usage
-	actionFlag := flag.String("action", "", "Chức năng thực thi [add|delete|proxy|dynamic-proxy|generate|test]")
+	actionFlag := flag.String("action", "", "Chức năng thực thi [server|add|delete|proxy|dynamic-proxy|any-proxy|generate|test]")
 	ifaceFlag := flag.String("iface", defaultIface, "Tên card mạng Linux (vd: eth0, ens3, enp1s0)")
 	prefixFlag := flag.String("prefix", "", "IPv6 Prefix (vd: 2402:800:1234:5678::/64)")
 	countFlag := flag.Int("count", 50, "Số lượng IPv6 cần sinh")
 	proxyHostFlag := flag.String("proxy-host", "0.0.0.0", "Địa chỉ IP lắng nghe (0.0.0.0 để máy ngoài VPS kết nối được, 127.0.0.1 nếu chỉ dùng nội bộ)")
 	proxyPortFlag := flag.Int("proxy-port", 10808, "Cổng Local Proxy")
+	webPortFlag := flag.Int("web-port", 9090, "Cổng Web Dashboard quản lý (default 9090)")
+	dataFileFlag := flag.String("data", "data/proxies.json", "Đường dẫn file cơ sở dữ liệu proxy")
 	poolSizeFlag := flag.Int("pool-size", 200, "Số lượng IP duy trì trong Dynamic Pool (cho đa luồng)")
 	batchFlag := flag.Int("batch", 30, "Số lượng IP xoay mới mỗi đợt")
 	intervalFlag := flag.Int("interval", 30, "Chu kỳ xoay (giây)")
@@ -594,6 +663,14 @@ func main() {
 	// If CLI flag specified, run non-interactive
 	if *actionFlag != "" {
 		switch strings.ToLower(*actionFlag) {
+		case "server", "hub", "manage", "web":
+			if !isAdmin {
+				fmt.Println("Cần quyền Root / Sudo để chạy server!")
+				os.Exit(1)
+			}
+			runProxyHubServer(*ifaceFlag, *prefixFlag, *webPortFlag, *dataFileFlag)
+			return
+
 		case "generate":
 			ipNet, err := ParsePrefix(*prefixFlag)
 			if err != nil {
@@ -676,27 +753,42 @@ func main() {
 
 	for {
 		printBanner(isAdmin)
-		fmt.Println("  [1] ⚡ Sinh & Gán danh sách IPv6 vào Card mạng (Tĩnh)")
-		fmt.Println("  [2] 🧹 Gỡ bỏ IPv6 đã gán (Xem lịch sử & Clean up)")
-		fmt.Println("  [3] 🔄 Khởi chạy Proxy Server (Có chế độ Dynamic Rolling Pool 200 IPs - Không lag máy)")
-		fmt.Println("  [4] 🧪 Kiểm tra kết nối Internet thực tế của IPv6")
-		fmt.Println("  [5] 📄 Chỉ sinh danh sách IPv6 ra file .txt (Không can thiệp card mạng)")
+		fmt.Println("  [1] 🌐 Khởi chạy Web Dashboard Quản Lý Bán / Cho Thuê Proxy Đa Cổng (Admin UI)")
+		fmt.Println("  [2] 🔄 Khởi chạy Single Proxy (10808 / ANY-IP hoặc Rolling Pool)")
+		fmt.Println("  [3] ⚡ Sinh & Gán danh sách IPv6 vào Card mạng (Tĩnh)")
+		fmt.Println("  [4] 🧹 Gỡ bỏ IPv6 đã gán (Xem lịch sử & Clean up)")
+		fmt.Println("  [5] 🧪 Kiểm tra kết nối Internet thực tế của IPv6")
+		fmt.Println("  [6] 📄 Chỉ sinh danh sách IPv6 ra file .txt")
 		if !isAdmin {
 			fmt.Println("  [9] 🔑 Khởi động lại chương trình với quyền Root / Sudo")
 		}
 		fmt.Println("  [0] 🚪 Thoát")
 		fmt.Println("------------------------------------------------------------------")
 
-		choice := readLine(scanner, "👉 Chọn chức năng (0-5)", "1")
+		choice := readLine(scanner, "👉 Chọn chức năng (0-6)", "1")
 
 		switch choice {
 		case "1":
-			handleAddIPv6(scanner, isAdmin)
+			iface, err := selectInterface(scanner)
+			if err != nil {
+				fmt.Println("Lỗi:", err)
+				continue
+			}
+			detectedPrefix := DetectGlobalPrefix(*iface)
+			prefix := readLine(scanner, "👉 Nhập IPv6 Prefix (/64)", detectedPrefix)
+			portStr := readLine(scanner, "👉 Cổng Web Dashboard", "9090")
+			p, _ := strconv.Atoi(portStr)
+			if p <= 0 {
+				p = 9090
+			}
+			runProxyHubServer(iface.Name, prefix, p, "data/proxies.json")
 		case "2":
-			handleRemoveIPv6(scanner, isAdmin)
-		case "3":
 			handleProxyMenu(scanner, isAdmin)
+		case "3":
+			handleAddIPv6(scanner, isAdmin)
 		case "4":
+			handleRemoveIPv6(scanner, isAdmin)
+		case "5":
 			// Test current interface or assigned records
 			records, _ := LoadAssignedRecords()
 			var sampleIPs []net.IP
@@ -708,11 +800,11 @@ func main() {
 				}
 			}
 			if len(sampleIPs) == 0 {
-				fmt.Println("\nChưa có danh sách IP đã gán. Hãy gán IP ở mục [1] trước hoặc kiểm tra qua file.")
+				fmt.Println("\nChưa có danh sách IP đã gán. Hãy gán IP ở mục [3] trước hoặc kiểm tra qua file.")
 			} else {
 				testConnectivityWithIPs(sampleIPs)
 			}
-		case "5":
+		case "6":
 			handleGenerateOnly(scanner)
 		case "9":
 			if !isAdmin {
