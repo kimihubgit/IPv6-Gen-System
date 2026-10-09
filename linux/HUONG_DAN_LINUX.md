@@ -164,8 +164,8 @@ curl.exe -s -x socks5h://<IP_VPS>:10809 https://api64.ipify.org
 import requests
 
 proxies = {
-    'http': 'http://42.96.15.130:10808',
-    'https': 'http://42.96.15.130:10808',
+    'http': 'http://khach1:pass1234@42.96.15.130:10001',
+    'https': 'http://khach1:pass1234@42.96.15.130:10001',
 }
 
 # Mỗi request gửi đi sẽ mang một IPv6 mới
@@ -173,6 +173,43 @@ for i in range(5):
     res = requests.get('https://api64.ipify.org?format=json', proxies=proxies, timeout=10)
     print(f"Lần {i+1}: {res.json()['ip']}")
 ```
+
+---
+
+## 🌐 4. Quản Lý Bán / Cho Thuê Proxy Qua Web Admin Dashboard
+
+Hệ thống đã tích hợp sẵn **Web Admin Dashboard trực quan** chạy ngầm 24/7 trên cổng **`9090`**.
+
+### 1. Truy cập Web Dashboard:
+* Mở trình duyệt (Chrome, Edge...) trên máy tính hoặc điện thoại:
+  👉 **`http://<IP_VPS>:9090`** (Ví dụ: `http://42.96.15.130:9090`)
+* **Tài khoản đăng nhập mặc định:**
+  - Username: **`admin`**
+  - Password: **`admin123`** *(có thể đổi mật khẩu bất kỳ lúc nào ngay trong mục Cài đặt góc trên bên phải)*
+
+### 2. Các Tính Năng Nổi Bật Trên Web Dashboard:
+1. **Quản lý Đa Cổng (Multi-Port):**
+   - Mỗi khách hàng được cấp 1 Port riêng biệt (VD: `10001`, `10002`, `10003`...).
+   - Mỗi port hỗ trợ đồng thời cả **HTTP Proxy** và **SOCKS5 Proxy**.
+2. **Xác Thực (Username / Password Auth):**
+   - Đặt tài khoản và mật khẩu riêng cho từng khách hàng (hoặc để trống nếu không cần auth).
+3. **Giới Hạn Dung Lượng (Bandwidth Quota):**
+   - Giới hạn số GB cho từng proxy (VD: `5 GB`, `10 GB`, `50 GB`, hoặc `0 = Không giới hạn`).
+   - Bộ đếm thời gian thực (Real-time Metering) hiển thị thanh tiến trình trực quan (`1.25 / 10.00 GB`).
+   - Khi hết dung lượng: Hệ thống tự động khóa proxy đó ngay lập tức để tránh vượt băng thông.
+   - Có nút **`🔄 0 GB`** để Reset dung lượng về 0 khi khách gia hạn thêm GB.
+4. **Thời Hạn Sử Dụng (Expiration Date):**
+   - Cài đặt số ngày sử dụng (VD: `3 ngày`, `7 ngày`, `30 ngày`, hoặc `0 = Vĩnh viễn`).
+   - Hiển thị đếm ngược thời gian hết hạn (`Còn 28 ngày nữa`, `Đã hết hạn`).
+   - Khi hết hạn: Proxy tự động ngắt kết nối.
+5. **Chính Sách Xoay IP (Rotation Engine):**
+   - **Xoay mỗi Request:** Mỗi request từ tool/trình duyệt sẽ mang 1 IPv6 mới toanh từ 18 tỷ tỷ IP.
+   - **Giữ IP X giây (Sticky Session):** Giữ nguyên 1 IP trong X giây (VD: 60s, 300s, 600s) rồi mới xoay, cực kỳ thích hợp để nuôi tài khoản hoặc tránh checkpoint.
+   - **Cố định 1 IP (Static IPv6):** Cấp cố định 1 IPv6 duy nhất trong dải cho khách hàng.
+6. **Xuất Danh Sách Proxy 1-Click:**
+   - Bấm nút **📋 Export Proxy** để lấy toàn bộ danh sách định dạng chuẩn `IP:Port:User:Pass` copy thẳng vào AdsPower, GoLogin, Hidemyacc...
+7. **Khóa / Mở Khóa Tức Thì:**
+   - Nút bật/tắt (Enable/Disable) để tạm ngưng hoặc mở lại proxy bất cứ lúc nào.
 
 ---
 
