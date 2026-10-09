@@ -113,7 +113,7 @@ func (ws *WebServer) authMiddleware(next http.HandlerFunc) http.HandlerFunc {
 }
 
 func jsonResponse(w http.ResponseWriter, status int, data interface{}) {
-	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(data)
 }
@@ -160,45 +160,77 @@ func (ws *WebServer) handleLogin(w http.ResponseWriter, r *http.Request) {
 
 func (ws *WebServer) handleLogout(w http.ResponseWriter, r *http.Request) {
 	cookie, err := r.Cookie("admin_token")
-	if err == nil {
+	if err == nil && cookie.Value != "" {
 		ws.mu.Lock()
 		delete(ws.sessions, cookie.Value)
 		ws.mu.Unlock()
 	}
 
 	http.SetCookie(w, &http.Cookie{
-		Name:    "admin_token",
-		Value:   "",
-		Path:    "/",
-		Expires: time.Now().Add(-1 * time.Hour),
+		Name:     "admin_token",
+		Value:    "",
+		Path:     "/",
+		Expires:  time.Unix(0, 0),
+		HttpOnly: true,
 	})
-	jsonResponse(w, http.StatusOK, map[string]string{"status": "ok"})
+
+	jsonResponse(w, http.StatusOK, map[string]string{"status": "ok", "message": "Đã đăng xuất"})
 }
 
 func (ws *WebServer) handleStats(w http.ResponseWriter, r *http.Request) {
 	proxies := ws.store.GetAll()
-	totalProxies := len(proxies)
-	activeProxies := 0
+	activeCount := 0
 	var totalBytes int64 = 0
 
+	now := time.Now()
 	for _, p := range proxies {
 		totalBytes += p.BytesUsed
-		if p.Enabled && !p.IsExpired() && !p.IsTrafficExceeded() {
-			activeProxies++
+		if p.Enabled {
+			if p.ExpiresAt != nil && p.ExpiresAt.Before(now) {
+				continue
+			}
+			if p.MaxBytes > 0 && p.BytesUsed >= p.MaxBytes {
+				continue
+			}
+			activeCount++
 		}
 	}
 
-	uptime := time.Since(ws.startTime).Round(time.Second).String()
+	uptimeDuration := time.Since(ws.startTime).Round(time.Second)
+	days := int(uptimeDuration.Hours()) / 24
+	hours := int(uptimeDuration.Hours()) % 24
+	mins := int(uptimeDuration.Minutes()) % 60
+	secs := int(uptimeDuration.Seconds()) % 60
+	var uptimeStr string
+	if days > 0 {
+		uptimeStr = fmt.Sprintf("%dd %dh %dm", days, hours, mins)
+	} else if hours > 0 {
+		uptimeStr = fmt.Sprintf("%dh %dm %ds", hours, mins, secs)
+	} else {
+		uptimeStr = fmt.Sprintf("%dm %ds", mins, secs)
+	}
 
-	jsonResponse(w, http.StatusOK, map[string]interface{}{
-		"total_proxies":  totalProxies,
-		"active_proxies": activeProxies,
+	// Suggest next free port
+	suggestPort := 10001
+	usedPorts := make(map[int]bool)
+	for _, p := range proxies {
+		usedPorts[p.Port] = true
+	}
+	for usedPorts[suggestPort] {
+		suggestPort++
+	}
+
+	res := map[string]interface{}{
+		"active_proxies": activeCount,
+		"total_proxies":  len(proxies),
 		"total_bytes":    totalBytes,
+		"uptime":         uptimeStr,
 		"prefix":         ws.prefix,
 		"public_ip":      ws.publicIPv4,
-		"uptime":         uptime,
-		"suggest_port":   ws.store.NextAvailablePort(10001),
-	})
+		"suggest_port":   suggestPort,
+	}
+
+	jsonResponse(w, http.StatusOK, res)
 }
 
 func (ws *WebServer) handleProxies(w http.ResponseWriter, r *http.Request) {
@@ -209,14 +241,14 @@ func (ws *WebServer) handleProxies(w http.ResponseWriter, r *http.Request) {
 
 	case http.MethodPost:
 		var req struct {
-			Name         string `json:"name"`
-			Port         int    `json:"port"`
-			Username     string `json:"username"`
-			Password     string `json:"password"`
-			MaxGB        float64 `json:"max_gb"`        // 0 = Không giới hạn
-			ExpireDays   int    `json:"expire_days"`   // 0 = Vĩnh viễn
-			RotationType string `json:"rotation_type"` // request | sticky | static
-			StickySec    int    `json:"sticky_sec"`
+			Name         string  `json:"name"`
+			Port         int     `json:"port"`
+			Username     string  `json:"username"`
+			Password     string  `json:"password"`
+			MaxGB        float64 `json:"max_gb"`
+			ExpireDays   int     `json:"expire_days"`
+			RotationType string  `json:"rotation_type"`
+			StickySec    int     `json:"sticky_sec"`
 		}
 
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -224,11 +256,13 @@ func (ws *WebServer) handleProxies(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		if req.Port <= 0 || req.Port > 65535 {
-			req.Port = ws.store.NextAvailablePort(10001)
+		if req.Port < 1024 || req.Port > 65535 {
+			jsonResponse(w, http.StatusBadRequest, map[string]string{"error": "Cổng phải nằm trong khoảng 1024 - 65535"})
+			return
 		}
+
 		if req.Name == "" {
-			req.Name = fmt.Sprintf("Proxy-%d", req.Port)
+			req.Name = fmt.Sprintf("Proxy Port %d", req.Port)
 		}
 
 		var maxBytes int64 = 0
@@ -243,15 +277,17 @@ func (ws *WebServer) handleProxies(w http.ResponseWriter, r *http.Request) {
 		}
 
 		rotType := RotationPolicy(req.RotationType)
-		if rotType != RotationSticky && rotType != RotationStatic {
+		if rotType != RotationPerRequest && rotType != RotationSticky && rotType != RotationStatic {
 			rotType = RotationPerRequest
 		}
-		if rotType == RotationSticky && req.StickySec <= 0 {
-			req.StickySec = 60
+
+		stickySec := req.StickySec
+		if stickySec <= 0 {
+			stickySec = 60
 		}
 
 		acc := &ProxyAccount{
-			ID:           fmt.Sprintf("%d", time.Now().UnixNano()),
+			ID:           fmt.Sprintf("px-%d", time.Now().UnixNano()),
 			Name:         req.Name,
 			Port:         req.Port,
 			Username:     req.Username,
@@ -261,7 +297,7 @@ func (ws *WebServer) handleProxies(w http.ResponseWriter, r *http.Request) {
 			BytesUsed:    0,
 			ExpiresAt:    expiresAt,
 			RotationType: rotType,
-			StickySec:    req.StickySec,
+			StickySec:    stickySec,
 			Enabled:      true,
 			CreatedAt:    time.Now(),
 		}
@@ -273,7 +309,7 @@ func (ws *WebServer) handleProxies(w http.ResponseWriter, r *http.Request) {
 
 		if err := ws.manager.SyncAccount(acc); err != nil {
 			_ = ws.store.Delete(acc.ID)
-			jsonResponse(w, http.StatusInternalServerError, map[string]string{"error": fmt.Sprintf("Không thể mở port: %v", err)})
+			jsonResponse(w, http.StatusInternalServerError, map[string]string{"error": fmt.Sprintf("Không thể mở cổng %d: %v", req.Port, err)})
 			return
 		}
 
@@ -286,17 +322,16 @@ func (ws *WebServer) handleProxies(w http.ResponseWriter, r *http.Request) {
 }
 
 func (ws *WebServer) handleProxyItem(w http.ResponseWriter, r *http.Request) {
-	id := strings.TrimPrefix(r.URL.Path, "/api/proxies/")
-	parts := strings.Split(id, "/")
-	proxyID := parts[0]
+	path := strings.TrimPrefix(r.URL.Path, "/api/proxies/")
+	parts := strings.Split(path, "/")
+	id := parts[0]
 
-	acc := ws.store.GetByID(proxyID)
+	acc := ws.store.GetByID(id)
 	if acc == nil {
 		jsonResponse(w, http.StatusNotFound, map[string]string{"error": "Không tìm thấy proxy"})
 		return
 	}
 
-	// Sub-action: /api/proxies/:id/reset
 	if len(parts) > 1 && parts[1] == "reset" && r.Method == http.MethodPost {
 		acc.BytesUsed = 0
 		_ = ws.store.Save()
@@ -305,12 +340,17 @@ func (ws *WebServer) handleProxyItem(w http.ResponseWriter, r *http.Request) {
 	}
 
 	switch r.Method {
+	case http.MethodGet:
+		jsonResponse(w, http.StatusOK, acc)
+
 	case http.MethodPut:
 		var req struct {
 			Name         string   `json:"name"`
+			Port         int      `json:"port"`
 			Username     string   `json:"username"`
 			Password     string   `json:"password"`
 			MaxGB        *float64 `json:"max_gb"`
+			ExpireDays   *int     `json:"expire_days"`
 			AddDays      int      `json:"add_days"`
 			SetExpireNil bool     `json:"set_expire_nil"`
 			RotationType string   `json:"rotation_type"`
@@ -339,8 +379,16 @@ func (ws *WebServer) handleProxyItem(w http.ResponseWriter, r *http.Request) {
 				acc.MaxBytes = int64(*req.MaxGB * 1024 * 1024 * 1024)
 			}
 		}
+
 		if req.SetExpireNil {
 			acc.ExpiresAt = nil
+		} else if req.ExpireDays != nil {
+			if *req.ExpireDays <= 0 {
+				acc.ExpiresAt = nil
+			} else {
+				exp := time.Now().AddDate(0, 0, *req.ExpireDays)
+				acc.ExpiresAt = &exp
+			}
 		} else if req.AddDays > 0 {
 			base := time.Now()
 			if acc.ExpiresAt != nil && acc.ExpiresAt.After(base) {
@@ -349,6 +397,7 @@ func (ws *WebServer) handleProxyItem(w http.ResponseWriter, r *http.Request) {
 			exp := base.AddDate(0, 0, req.AddDays)
 			acc.ExpiresAt = &exp
 		}
+
 		if req.RotationType != "" {
 			acc.RotationType = RotationPolicy(req.RotationType)
 		}
@@ -357,6 +406,21 @@ func (ws *WebServer) handleProxyItem(w http.ResponseWriter, r *http.Request) {
 		}
 		if req.Enabled != nil {
 			acc.Enabled = *req.Enabled
+		}
+
+		// Handle port update if changed
+		if req.Port > 0 && req.Port != acc.Port {
+			if req.Port < 1024 || req.Port > 65535 {
+				jsonResponse(w, http.StatusBadRequest, map[string]string{"error": "Cổng phải nằm trong khoảng 1024 - 65535"})
+				return
+			}
+			if existing := ws.store.GetByPort(req.Port); existing != nil && existing.ID != acc.ID {
+				jsonResponse(w, http.StatusBadRequest, map[string]string{"error": fmt.Sprintf("Cổng %d đã được dùng bởi proxy khác", req.Port)})
+				return
+			}
+			oldPort := acc.Port
+			acc.Port = req.Port
+			ws.manager.RemoveAccount(oldPort)
 		}
 
 		_ = ws.manager.SyncAccount(acc)
@@ -449,425 +513,1222 @@ const dashboardHTML = `<!DOCTYPE html>
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>IPv6 Proxy Hub - Cloud Manager</title>
+  <title>IPv6 Proxy Hub - Cloud Enterprise Manager</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
   <style>
     :root {
-      --bg: #0b0f19;
-      --card-bg: rgba(18, 24, 38, 0.75);
-      --card-border: rgba(255, 255, 255, 0.08);
+      --bg-dark: #080c14;
+      --bg-surface: rgba(15, 23, 42, 0.72);
+      --bg-surface-elevated: rgba(22, 34, 60, 0.85);
+      --border-subtle: rgba(255, 255, 255, 0.08);
+      --border-focus: rgba(99, 102, 241, 0.6);
+      
       --primary: #6366f1;
       --primary-hover: #4f46e5;
-      --primary-glow: rgba(99, 102, 241, 0.25);
-      --success: #10b981;
-      --warning: #f59e0b;
-      --danger: #ef4444;
-      --text: #f3f4f6;
-      --text-muted: #9ca3af;
-      --glass: backdrop-filter: blur(16px);
+      --primary-glow: rgba(99, 102, 241, 0.35);
+      
+      --cyan: #06b6d4;
+      --cyan-glow: rgba(6, 182, 212, 0.3);
+      
+      --emerald: #10b981;
+      --emerald-glow: rgba(16, 185, 129, 0.3);
+      
+      --amber: #f59e0b;
+      --amber-glow: rgba(245, 158, 11, 0.3);
+      
+      --rose: #f43f5e;
+      --rose-glow: rgba(244, 63, 94, 0.3);
+      
+      --text: #f8fafc;
+      --text-muted: #94a3b8;
+      --text-dim: #64748b;
+      
+      --radius-sm: 8px;
+      --radius-md: 12px;
+      --radius-lg: 18px;
+      --radius-xl: 24px;
     }
+
     * { box-sizing: border-box; margin: 0; padding: 0; }
+    
     body {
-      font-family: 'Inter', sans-serif;
-      background: var(--bg);
+      font-family: 'Plus Jakarta Sans', sans-serif;
+      background: var(--bg-dark);
       color: var(--text);
       min-height: 100vh;
+      line-height: 1.5;
       background-image: 
-        radial-gradient(at 0% 0%, rgba(99, 102, 241, 0.12) 0px, transparent 50%),
-        radial-gradient(at 100% 100%, rgba(16, 185, 129, 0.08) 0px, transparent 50%);
+        radial-gradient(circle at 10% 10%, rgba(99, 102, 241, 0.15) 0px, transparent 45%),
+        radial-gradient(circle at 90% 20%, rgba(6, 182, 212, 0.12) 0px, transparent 40%),
+        radial-gradient(circle at 50% 90%, rgba(139, 92, 246, 0.1) 0px, transparent 50%);
       background-attachment: fixed;
+      overflow-x: hidden;
     }
-    .container { max-width: 1300px; margin: 0 auto; padding: 24px; }
+
+    /* Custom Scrollbar */
+    ::-webkit-scrollbar { width: 8px; height: 8px; }
+    ::-webkit-scrollbar-track { background: rgba(0, 0, 0, 0.2); }
+    ::-webkit-scrollbar-thumb { background: rgba(255, 255, 255, 0.15); border-radius: 4px; }
+    ::-webkit-scrollbar-thumb:hover { background: rgba(255, 255, 255, 0.25); }
+
+    .app-container {
+      max-width: 1440px;
+      margin: 0 auto;
+      padding: 24px 32px 48px;
+    }
+
+    /* Glass Effect Utility */
+    .glass-card {
+      background: var(--bg-surface);
+      backdrop-filter: blur(20px) saturate(180%);
+      -webkit-backdrop-filter: blur(20px) saturate(180%);
+      border: 1px solid var(--border-subtle);
+      border-radius: var(--radius-lg);
+      box-shadow: 0 10px 30px -10px rgba(0, 0, 0, 0.5);
+    }
+
+    /* Header */
     header {
-      display: flex; justify-content: space-between; align-items: center;
-      padding-bottom: 24px; border-bottom: 1px solid var(--card-border);
-      margin-bottom: 24px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 16px 24px;
+      margin-bottom: 28px;
+      border-radius: var(--radius-xl);
     }
-    .logo { display: flex; align-items: center; gap: 12px; }
-    .logo-icon {
-      width: 44px; height: 44px; border-radius: 12px;
-      background: linear-gradient(135deg, #6366f1, #a855f7);
-      display: flex; align-items: center; justify-content: center;
-      font-size: 22px; box-shadow: 0 0 20px var(--primary-glow);
+
+    .brand-section {
+      display: flex;
+      align-items: center;
+      gap: 16px;
     }
-    .logo-text h1 { font-size: 20px; font-weight: 800; letter-spacing: -0.5px; }
-    .logo-text p { font-size: 13px; color: var(--text-muted); }
+
+    .brand-logo {
+      width: 48px;
+      height: 48px;
+      border-radius: 14px;
+      background: linear-gradient(135deg, #6366f1, #06b6d4);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      box-shadow: 0 0 24px var(--primary-glow);
+      position: relative;
+    }
+
+    .brand-logo svg {
+      width: 26px;
+      height: 26px;
+      fill: none;
+      stroke: #fff;
+      stroke-width: 2;
+    }
+
+    .brand-title h1 {
+      font-size: 20px;
+      font-weight: 800;
+      letter-spacing: -0.5px;
+      background: linear-gradient(120deg, #ffffff, #cbd5e1);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+    }
+
+    .brand-title p {
+      font-size: 13px;
+      color: var(--text-muted);
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+
+    .live-beacon {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 3px 10px;
+      border-radius: 20px;
+      background: rgba(16, 185, 129, 0.12);
+      border: 1px solid rgba(16, 185, 129, 0.3);
+      color: #34d399;
+      font-size: 11px;
+      font-weight: 600;
+      letter-spacing: 0.5px;
+      text-transform: uppercase;
+    }
+
+    .pulse-dot {
+      width: 7px;
+      height: 7px;
+      border-radius: 50%;
+      background: #10b981;
+      box-shadow: 0 0 10px #10b981;
+      animation: pulseAnim 2s infinite;
+    }
+
+    @keyframes pulseAnim {
+      0%, 100% { opacity: 1; transform: scale(1); }
+      50% { opacity: 0.4; transform: scale(0.85); }
+    }
+
+    .header-actions {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+
+    .ip-badge {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 8px 14px;
+      border-radius: var(--radius-md);
+      background: rgba(255, 255, 255, 0.04);
+      border: 1px solid var(--border-subtle);
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 13px;
+      color: #e2e8f0;
+      cursor: pointer;
+      transition: all 0.2s;
+    }
+
+    .ip-badge:hover {
+      background: rgba(255, 255, 255, 0.08);
+      border-color: rgba(255, 255, 255, 0.15);
+    }
+
+    /* Buttons */
     .btn {
-      padding: 10px 18px; border-radius: 10px; font-weight: 600;
-      font-size: 14px; cursor: pointer; transition: all 0.2s;
-      display: inline-flex; align-items: center; gap: 8px;
-      border: 1px solid transparent; text-decoration: none;
+      padding: 9px 16px;
+      border-radius: var(--radius-md);
+      font-weight: 600;
+      font-size: 13.5px;
+      cursor: pointer;
+      transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      border: 1px solid transparent;
+      outline: none;
+      text-decoration: none;
+      user-select: none;
     }
+
+    .btn:active { transform: scale(0.97); }
+
+    .btn svg {
+      width: 16px;
+      height: 16px;
+      stroke-width: 2;
+    }
+
     .btn-primary {
-      background: var(--primary); color: white;
-      box-shadow: 0 4px 14px var(--primary-glow);
+      background: linear-gradient(135deg, #6366f1, #4f46e5);
+      color: #fff;
+      box-shadow: 0 4px 18px var(--primary-glow);
+      border-color: rgba(255, 255, 255, 0.15);
     }
-    .btn-primary:hover { background: var(--primary-hover); transform: translateY(-1px); }
+
+    .btn-primary:hover {
+      background: linear-gradient(135deg, #4f46e5, #4338ca);
+      box-shadow: 0 6px 24px var(--primary-glow);
+      transform: translateY(-1px);
+    }
+
     .btn-secondary {
-      background: rgba(255, 255, 255, 0.06); color: var(--text);
-      border-color: var(--card-border);
+      background: rgba(255, 255, 255, 0.05);
+      color: #e2e8f0;
+      border-color: var(--border-subtle);
     }
-    .btn-secondary:hover { background: rgba(255, 255, 255, 0.1); }
-    .btn-danger { background: rgba(239, 68, 68, 0.15); color: #f87171; border-color: rgba(239, 68, 68, 0.3); }
-    .btn-danger:hover { background: rgba(239, 68, 68, 0.25); }
-    .btn-sm { padding: 6px 12px; font-size: 12px; border-radius: 8px; }
 
-    /* Stats Grid */
-    .stats-grid {
-      display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
-      gap: 16px; margin-bottom: 28px;
+    .btn-secondary:hover {
+      background: rgba(255, 255, 255, 0.09);
+      border-color: rgba(255, 255, 255, 0.15);
+      transform: translateY(-1px);
     }
-    .stat-card {
-      background: var(--card-bg); border: 1px solid var(--card-border);
-      border-radius: 16px; padding: 20px; backdrop-filter: blur(12px);
-      display: flex; flex-direction: column; gap: 8px;
-    }
-    .stat-title { font-size: 13px; color: var(--text-muted); font-weight: 500; }
-    .stat-value { font-size: 26px; font-weight: 800; color: #fff; }
-    .stat-sub { font-size: 12px; color: var(--text-muted); }
 
-    /* Section & Toolbar */
-    .toolbar {
-      display: flex; justify-content: space-between; align-items: center;
-      margin-bottom: 16px; gap: 12px; flex-wrap: wrap;
+    .btn-danger {
+      background: rgba(244, 63, 94, 0.12);
+      color: #fda4af;
+      border-color: rgba(244, 63, 94, 0.25);
     }
-    .search-box {
-      background: rgba(255, 255, 255, 0.05); border: 1px solid var(--card-border);
-      padding: 10px 16px; border-radius: 10px; color: #fff; width: 280px;
-      font-size: 14px; outline: none;
-    }
-    .search-box:focus { border-color: var(--primary); }
 
-    /* Table */
-    .table-card {
-      background: var(--card-bg); border: 1px solid var(--card-border);
-      border-radius: 16px; overflow: hidden; backdrop-filter: blur(12px);
+    .btn-danger:hover {
+      background: rgba(244, 63, 94, 0.22);
+      border-color: rgba(244, 63, 94, 0.4);
     }
-    table { width: 100%; border-collapse: collapse; text-align: left; }
+
+    .btn-sm {
+      padding: 6px 12px;
+      font-size: 12.5px;
+      border-radius: var(--radius-sm);
+    }
+
+    .btn-icon-only {
+      padding: 8px;
+      border-radius: var(--radius-sm);
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+    }
+
+    /* KPI Stats Grid */
+    .kpi-grid {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 20px;
+      margin-bottom: 28px;
+    }
+
+    @media (max-width: 1100px) {
+      .kpi-grid { grid-template-columns: repeat(2, 1fr); }
+    }
+    @media (max-width: 640px) {
+      .kpi-grid { grid-template-columns: 1fr; }
+    }
+
+    .kpi-card {
+      padding: 22px 24px;
+      display: flex;
+      flex-direction: column;
+      position: relative;
+      overflow: hidden;
+      transition: all 0.3s;
+    }
+
+    .kpi-card:hover {
+      transform: translateY(-2px);
+      border-color: rgba(255, 255, 255, 0.15);
+      box-shadow: 0 14px 34px -10px rgba(0, 0, 0, 0.6);
+    }
+
+    .kpi-card::before {
+      content: '';
+      position: absolute;
+      top: 0; left: 0; right: 0;
+      height: 2px;
+      background: var(--kpi-accent, var(--primary));
+      opacity: 0.8;
+    }
+
+    .kpi-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 12px;
+    }
+
+    .kpi-title {
+      font-size: 13px;
+      font-weight: 600;
+      color: var(--text-muted);
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+    }
+
+    .kpi-icon-wrap {
+      width: 40px;
+      height: 40px;
+      border-radius: 12px;
+      background: var(--kpi-bg, rgba(99, 102, 241, 0.12));
+      border: 1px solid var(--kpi-border, rgba(99, 102, 241, 0.25));
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      color: var(--kpi-color, var(--primary));
+    }
+
+    .kpi-icon-wrap svg {
+      width: 20px;
+      height: 20px;
+      stroke-width: 2;
+    }
+
+    .kpi-value {
+      font-size: 28px;
+      font-weight: 800;
+      letter-spacing: -0.5px;
+      color: #fff;
+      margin-bottom: 4px;
+      line-height: 1.2;
+    }
+
+    .kpi-desc {
+      font-size: 12.5px;
+      color: var(--text-dim);
+    }
+
+    /* Filter & Controls Toolbar */
+    .controls-toolbar {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 16px;
+      margin-bottom: 18px;
+      flex-wrap: wrap;
+    }
+
+    .tabs-group {
+      display: flex;
+      background: rgba(0, 0, 0, 0.3);
+      padding: 4px;
+      border-radius: var(--radius-md);
+      border: 1px solid var(--border-subtle);
+    }
+
+    .tab-btn {
+      padding: 7px 16px;
+      border-radius: 8px;
+      font-size: 13px;
+      font-weight: 600;
+      background: transparent;
+      border: none;
+      color: var(--text-muted);
+      cursor: pointer;
+      transition: all 0.2s;
+    }
+
+    .tab-btn.active {
+      background: rgba(255, 255, 255, 0.1);
+      color: #fff;
+      box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
+    }
+
+    .search-input-wrap {
+      position: relative;
+      min-width: 300px;
+    }
+
+    .search-input-wrap svg {
+      position: absolute;
+      left: 14px;
+      top: 50%;
+      transform: translateY(-50%);
+      width: 16px;
+      height: 16px;
+      color: var(--text-dim);
+      pointer-events: none;
+    }
+
+    .search-input {
+      width: 100%;
+      padding: 10px 16px 10px 40px;
+      border-radius: var(--radius-md);
+      background: rgba(255, 255, 255, 0.04);
+      border: 1px solid var(--border-subtle);
+      color: #fff;
+      font-size: 13.5px;
+      outline: none;
+      transition: all 0.2s;
+    }
+
+    .search-input:focus {
+      background: rgba(255, 255, 255, 0.07);
+      border-color: var(--primary);
+      box-shadow: 0 0 0 3px var(--primary-glow);
+    }
+
+    /* Table Design */
+    .table-container {
+      overflow: hidden;
+      border-radius: var(--radius-lg);
+    }
+
+    .table-responsive {
+      overflow-x: auto;
+    }
+
+    table {
+      width: 100%;
+      border-collapse: separate;
+      border-spacing: 0;
+      text-align: left;
+    }
+
     th {
-      background: rgba(255, 255, 255, 0.03); padding: 14px 18px;
-      font-size: 12px; font-weight: 600; text-transform: uppercase;
-      letter-spacing: 0.5px; color: var(--text-muted);
-      border-bottom: 1px solid var(--card-border);
+      background: rgba(255, 255, 255, 0.025);
+      padding: 16px 20px;
+      font-size: 11.5px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.7px;
+      color: var(--text-dim);
+      border-bottom: 1px solid var(--border-subtle);
+      white-space: nowrap;
     }
+
     td {
-      padding: 16px 18px; font-size: 14px;
+      padding: 16px 20px;
+      font-size: 13.5px;
       border-bottom: 1px solid rgba(255, 255, 255, 0.04);
       vertical-align: middle;
+      color: #e2e8f0;
+      transition: background 0.15s;
     }
+
     tr:last-child td { border-bottom: none; }
-    tr:hover td { background: rgba(255, 255, 255, 0.02); }
+    tbody tr:hover td { background: rgba(255, 255, 255, 0.025); }
 
-    .badge {
-      display: inline-flex; align-items: center; gap: 6px;
-      padding: 4px 10px; border-radius: 20px; font-size: 12px;
+    .client-title {
+      font-weight: 700;
+      color: #fff;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+
+    .client-avatar {
+      width: 32px;
+      height: 32px;
+      border-radius: 9px;
+      background: linear-gradient(135deg, rgba(99, 102, 241, 0.2), rgba(6, 182, 212, 0.2));
+      border: 1px solid rgba(255, 255, 255, 0.1);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 14px;
+      color: #cbd5e1;
+    }
+
+    .port-pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      font-family: 'JetBrains Mono', monospace;
       font-weight: 600;
-    }
-    .badge-success { background: rgba(16, 185, 129, 0.15); color: #34d399; }
-    .badge-warning { background: rgba(245, 158, 11, 0.15); color: #fbbf24; }
-    .badge-danger { background: rgba(239, 68, 68, 0.15); color: #f87171; }
-    .badge-muted { background: rgba(255, 255, 255, 0.08); color: var(--text-muted); }
-
-    .progress-bar {
-      height: 6px; background: rgba(255, 255, 255, 0.1);
-      border-radius: 3px; overflow: hidden; margin-top: 6px; width: 120px;
-    }
-    .progress-fill {
-      height: 100%; background: linear-gradient(90deg, #6366f1, #a855f7);
-      border-radius: 3px; transition: width 0.3s;
+      color: #38bdf8;
+      background: rgba(56, 189, 248, 0.1);
+      border: 1px solid rgba(56, 189, 248, 0.2);
+      padding: 4px 10px;
+      border-radius: 8px;
+      font-size: 13px;
     }
 
-    .auth-box {
-      font-family: monospace; font-size: 13px;
-      background: rgba(0, 0, 0, 0.3); padding: 4px 8px;
-      border-radius: 6px; border: 1px solid rgba(255, 255, 255, 0.05);
-      cursor: pointer; user-select: all;
+    .auth-snippet {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 12.5px;
+      background: rgba(0, 0, 0, 0.35);
+      border: 1px solid rgba(255, 255, 255, 0.08);
+      padding: 4px 10px;
+      border-radius: 7px;
+      cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      color: #cbd5e1;
+      transition: all 0.2s;
     }
 
-    /* Modal */
-    .modal-overlay {
-      position: fixed; inset: 0; background: rgba(0, 0, 0, 0.7);
-      backdrop-filter: blur(8px); display: none; align-items: center;
-      justify-content: center; z-index: 1000; padding: 20px;
+    .auth-snippet:hover {
+      background: rgba(255, 255, 255, 0.08);
+      border-color: rgba(255, 255, 255, 0.18);
+      color: #fff;
     }
-    .modal {
-      background: #111827; border: 1px solid var(--card-border);
-      border-radius: 20px; width: 100%; max-width: 520px;
-      box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.7);
+
+    /* Progress Traffic */
+    .traffic-box {
+      min-width: 130px;
+    }
+
+    .traffic-label {
+      font-size: 12.5px;
+      font-weight: 600;
+      color: #cbd5e1;
+      display: flex;
+      justify-content: space-between;
+      margin-bottom: 5px;
+    }
+
+    .progress-track {
+      height: 6px;
+      background: rgba(255, 255, 255, 0.08);
+      border-radius: 4px;
       overflow: hidden;
-    }
-    .modal-header {
-      padding: 20px 24px; border-bottom: 1px solid var(--card-border);
-      display: flex; justify-content: space-between; align-items: center;
-    }
-    .modal-header h3 { font-size: 18px; font-weight: 700; }
-    .modal-body { padding: 24px; display: flex; flex-direction: column; gap: 16px; }
-    .form-group { display: flex; flex-direction: column; gap: 6px; }
-    .form-group label { font-size: 13px; font-weight: 600; color: var(--text-muted); }
-    .form-control {
-      background: rgba(255, 255, 255, 0.05); border: 1px solid var(--card-border);
-      padding: 10px 14px; border-radius: 10px; color: #fff; font-size: 14px;
-      outline: none; transition: border 0.2s;
-    }
-    .form-control:focus { border-color: var(--primary); }
-    .modal-footer {
-      padding: 16px 24px; border-top: 1px solid var(--card-border);
-      display: flex; justify-content: flex-end; gap: 10px;
+      position: relative;
     }
 
-    /* Toast */
-    .toast {
-      position: fixed; bottom: 24px; right: 24px; z-index: 2000;
-      background: rgba(17, 24, 39, 0.95); border: 1px solid var(--card-border);
-      padding: 14px 20px; border-radius: 12px; font-size: 14px; font-weight: 500;
-      box-shadow: 0 10px 30px rgba(0,0,0,0.5); backdrop-filter: blur(10px);
-      display: none; align-items: center; gap: 10px;
+    .progress-fill {
+      height: 100%;
+      border-radius: 4px;
+      background: linear-gradient(90deg, #6366f1, #06b6d4);
+      transition: width 0.4s ease;
     }
-    .toast.show { display: flex; animation: slideIn 0.3s; }
-    @keyframes slideIn { from { transform: translateY(20px); opacity: 0; } to { transform: translateY(0); opacity: 1; } }
+
+    .progress-fill.full {
+      background: linear-gradient(90deg, #f59e0b, #ef4444);
+    }
+
+    /* Badges */
+    .badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 4px 10px;
+      border-radius: 20px;
+      font-size: 12px;
+      font-weight: 600;
+      letter-spacing: 0.3px;
+    }
+
+    .badge-dot {
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+    }
+
+    .badge-success {
+      background: rgba(16, 185, 129, 0.12);
+      color: #34d399;
+      border: 1px solid rgba(16, 185, 129, 0.25);
+    }
+    .badge-success .badge-dot { background: #10b981; box-shadow: 0 0 6px #10b981; }
+
+    .badge-danger {
+      background: rgba(244, 63, 94, 0.12);
+      color: #fda4af;
+      border: 1px solid rgba(244, 63, 94, 0.25);
+    }
+    .badge-danger .badge-dot { background: #f43f5e; box-shadow: 0 0 6px #f43f5e; }
+
+    .badge-warning {
+      background: rgba(245, 158, 11, 0.12);
+      color: #fcd34d;
+      border: 1px solid rgba(245, 158, 11, 0.25);
+    }
+    .badge-warning .badge-dot { background: #f59e0b; box-shadow: 0 0 6px #f59e0b; }
+
+    .badge-neutral {
+      background: rgba(255, 255, 255, 0.06);
+      color: var(--text-muted);
+      border: 1px solid rgba(255, 255, 255, 0.08);
+    }
+    .badge-neutral .badge-dot { background: var(--text-dim); }
+
+    .badge-indigo {
+      background: rgba(99, 102, 241, 0.12);
+      color: #a5b4fc;
+      border: 1px solid rgba(99, 102, 241, 0.25);
+    }
+
+    /* Actions Table Group */
+    .actions-group {
+      display: flex;
+      align-items: center;
+      justify-content: flex-end;
+      gap: 6px;
+    }
+
+    /* Modals */
+    .modal-backdrop {
+      position: fixed;
+      inset: 0;
+      background: rgba(3, 7, 18, 0.75);
+      backdrop-filter: blur(12px);
+      display: none;
+      align-items: center;
+      justify-content: center;
+      z-index: 1000;
+      padding: 20px;
+    }
+
+    .modal-box {
+      background: #0f172a;
+      border: 1px solid var(--border-subtle);
+      border-radius: var(--radius-xl);
+      width: 100%;
+      max-width: 540px;
+      box-shadow: 0 25px 60px -15px rgba(0, 0, 0, 0.8);
+      overflow: hidden;
+      animation: modalPop 0.25s cubic-bezier(0.16, 1, 0.3, 1);
+    }
+
+    @keyframes modalPop {
+      from { transform: scale(0.95); opacity: 0; }
+      to { transform: scale(1); opacity: 1; }
+    }
+
+    .modal-header {
+      padding: 20px 24px;
+      border-bottom: 1px solid var(--border-subtle);
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      background: rgba(255, 255, 255, 0.015);
+    }
+
+    .modal-header h3 {
+      font-size: 17px;
+      font-weight: 700;
+      color: #fff;
+    }
+
+    .modal-body {
+      padding: 24px;
+      display: flex;
+      flex-direction: column;
+      gap: 16px;
+      max-height: 80vh;
+      overflow-y: auto;
+    }
+
+    .modal-footer {
+      padding: 16px 24px;
+      border-top: 1px solid var(--border-subtle);
+      display: flex;
+      justify-content: flex-end;
+      gap: 10px;
+      background: rgba(0, 0, 0, 0.2);
+    }
+
+    .form-group {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+
+    .form-label {
+      font-size: 13px;
+      font-weight: 600;
+      color: #cbd5e1;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+
+    .form-control {
+      background: rgba(255, 255, 255, 0.04);
+      border: 1px solid var(--border-subtle);
+      border-radius: var(--radius-md);
+      padding: 10px 14px;
+      color: #fff;
+      font-size: 13.5px;
+      outline: none;
+      transition: all 0.2s;
+      width: 100%;
+    }
+
+    .form-control:focus {
+      background: rgba(255, 255, 255, 0.07);
+      border-color: var(--primary);
+      box-shadow: 0 0 0 3px var(--primary-glow);
+    }
+
+    .input-with-action {
+      display: flex;
+      gap: 8px;
+    }
+
+    .preview-proxy-card {
+      background: rgba(0, 0, 0, 0.35);
+      border: 1px dashed rgba(255, 255, 255, 0.15);
+      border-radius: var(--radius-md);
+      padding: 12px 14px;
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 12.5px;
+      color: #38bdf8;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      word-break: break-all;
+    }
+
+    /* Toast Notification */
+    .toast-container {
+      position: fixed;
+      bottom: 24px;
+      right: 24px;
+      z-index: 2000;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+      pointer-events: none;
+    }
+
+    .toast-item {
+      pointer-events: auto;
+      background: rgba(15, 23, 42, 0.95);
+      border: 1px solid rgba(255, 255, 255, 0.12);
+      backdrop-filter: blur(16px);
+      padding: 12px 18px;
+      border-radius: var(--radius-md);
+      box-shadow: 0 12px 30px rgba(0, 0, 0, 0.6);
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      font-size: 13.5px;
+      font-weight: 500;
+      color: #f8fafc;
+      animation: toastIn 0.3s cubic-bezier(0.16, 1, 0.3, 1);
+    }
+
+    @keyframes toastIn {
+      from { transform: translateY(20px); opacity: 0; }
+      to { transform: translateY(0); opacity: 1; }
+    }
 
     /* Login Screen */
     .login-wrapper {
-      min-height: 100vh; display: flex; align-items: center; justify-content: center; padding: 20px;
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 20px;
     }
-    .login-card {
-      background: var(--card-bg); border: 1px solid var(--card-border);
-      border-radius: 24px; padding: 36px; width: 100%; max-width: 400px;
-      backdrop-filter: blur(20px); box-shadow: 0 20px 40px rgba(0,0,0,0.5);
+
+    .login-box {
+      width: 100%;
+      max-width: 420px;
+      padding: 40px 36px;
+      border-radius: var(--radius-xl);
+      text-align: center;
+    }
+
+    .login-icon {
+      width: 60px;
+      height: 60px;
+      margin: 0 auto 20px;
+      border-radius: 18px;
+      background: linear-gradient(135deg, #6366f1, #06b6d4);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      box-shadow: 0 0 30px var(--primary-glow);
+    }
+
+    .login-icon svg {
+      width: 32px;
+      height: 32px;
+      stroke: #fff;
     }
   </style>
 </head>
 <body>
 
-  <!-- LOGIN SCREEN -->
+  <!-- LOGIN SECTION -->
   <div id="loginSection" class="login-wrapper" style="display: none;">
-    <div class="login-card">
-      <div style="text-align: center; margin-bottom: 28px;">
-        <div class="logo-icon" style="margin: 0 auto 16px; width: 56px; height: 56px; font-size: 28px;">🌐</div>
-        <h2 style="font-size: 22px; font-weight: 800;">Đăng Nhập Quản Trị</h2>
-        <p style="font-size: 13px; color: var(--text-muted); margin-top: 4px;">IPv6 Rotating Proxy Hub</p>
+    <div class="glass-card login-box">
+      <div class="login-icon">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><circle cx="12" cy="12" r="10"/><path d="M12 2a14.5 14.5 0 0 0 0 20 14.5 14.5 0 0 0 0-20"/><path d="M2 12h20"/></svg>
       </div>
-      <form id="loginForm" onsubmit="doLogin(event)">
-        <div class="form-group" style="margin-bottom: 14px;">
-          <label>Tài khoản</label>
+      <h2 style="font-size: 24px; font-weight: 800; margin-bottom: 6px;">IPv6 Proxy Hub</h2>
+      <p style="font-size: 13.5px; color: var(--text-muted); margin-bottom: 28px;">Đăng nhập bảng điều khiển hệ thống ANY-IP</p>
+      
+      <form id="loginForm" onsubmit="doLogin(event)" style="text-align: left;">
+        <div class="form-group" style="margin-bottom: 16px;">
+          <label class="form-label">Tài Khoản Quản Trị</label>
           <input type="text" id="loginUser" class="form-control" required placeholder="admin" autofocus>
         </div>
         <div class="form-group" style="margin-bottom: 24px;">
-          <label>Mật khẩu</label>
+          <label class="form-label">Mật Khẩu</label>
           <input type="password" id="loginPass" class="form-control" required placeholder="••••••••">
         </div>
-        <button type="submit" class="btn btn-primary" style="width: 100%; justify-content: center; padding: 12px;">Đăng Nhập</button>
+        <button type="submit" class="btn btn-primary" style="width: 100%; justify-content: center; padding: 12px; font-size: 14.5px;">
+          Xác Nhận Đăng Nhập
+        </button>
       </form>
     </div>
   </div>
 
-  <!-- DASHBOARD -->
-  <div id="appSection" class="container" style="display: none;">
-    <header>
-      <div class="logo">
-        <div class="logo-icon">🌐</div>
-        <div class="logo-text">
-          <h1>IPv6 Proxy Hub</h1>
-          <p>Hệ thống xoay IPv6 không giới hạn (ANY-IP + ndppd)</p>
+  <!-- MAIN DASHBOARD -->
+  <div id="appSection" class="app-container" style="display: none;">
+    
+    <!-- Top Bar -->
+    <header class="glass-card">
+      <div class="brand-section">
+        <div class="brand-logo">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><circle cx="12" cy="12" r="10"/><path d="M12 2a14.5 14.5 0 0 0 0 20 14.5 14.5 0 0 0 0-20"/><path d="M2 12h20"/></svg>
+        </div>
+        <div class="brand-title">
+          <div style="display: flex; align-items: center; gap: 10px;">
+            <h1>IPV6 PROXY HUB</h1>
+            <span class="live-beacon"><span class="pulse-dot"></span> LIVE ANY-IP</span>
+          </div>
+          <p>Kernel Rotator • 18,446,744,073,709,551,616 Địa Chỉ IPv6</p>
         </div>
       </div>
-      <div style="display: flex; gap: 10px;">
-        <button class="btn btn-secondary" onclick="openExportModal()">📋 Export Proxy</button>
-        <button class="btn btn-secondary" onclick="openSettingsModal()">⚙️ Đổi Pass Admin</button>
-        <button class="btn btn-danger btn-sm" onclick="doLogout()">Đăng Xuất</button>
+
+      <div class="header-actions">
+        <div class="ip-badge" onclick="copyToClipboard(publicIP)" title="Bấm để copy IP VPS">
+          <svg style="width: 15px; height: 15px; stroke: #38bdf8;" viewBox="0 0 24 24" fill="none" stroke="currentColor"><rect width="18" height="18" x="3" y="3" rx="2"/><path d="M9 3v18"/><path d="m14 9 3 3-3 3"/></svg>
+          <span id="topPublicIP">--</span>
+        </div>
+        <button class="btn btn-secondary btn-sm" onclick="openExportModal()">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" x2="12" y1="15" y2="3"/></svg>
+          Xuất Danh Sách
+        </button>
+        <button class="btn btn-secondary btn-sm" onclick="openSettingsModal()">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/><circle cx="12" cy="12" r="3"/></svg>
+          Cài Đặt
+        </button>
+        <button class="btn btn-danger btn-sm" onclick="doLogout()">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" x2="9" y1="12" y2="12"/></svg>
+          Thoát
+        </button>
       </div>
     </header>
 
-    <!-- Stats -->
-    <div class="stats-grid">
-      <div class="stat-card">
-        <div class="stat-title">Proxy Đang Hoạt Động</div>
-        <div class="stat-value" id="statActive">0 / 0</div>
-        <div class="stat-sub">Các cổng sẵn sàng phục vụ</div>
+    <!-- KPI Metrics Cards -->
+    <div class="kpi-grid">
+      <!-- Card 1 -->
+      <div class="glass-card kpi-card" style="--kpi-accent: #10b981; --kpi-bg: rgba(16, 185, 129, 0.12); --kpi-border: rgba(16, 185, 129, 0.25); --kpi-color: #34d399;">
+        <div class="kpi-header">
+          <span class="kpi-title">Proxy Đang Hoạt Động</span>
+          <div class="kpi-icon-wrap">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><rect width="20" height="8" x="2" y="2" rx="2" ry="2"/><rect width="20" height="8" x="2" y="14" rx="2" ry="2"/><line x1="6" x2="6.01" y1="6" y2="6"/><line x1="6" x2="6.01" y1="18" y2="18"/></svg>
+          </div>
+        </div>
+        <div class="kpi-value" id="kpiActive">0 / 0</div>
+        <div class="kpi-desc">Cổng proxy sẵn sàng phục vụ</div>
       </div>
-      <div class="stat-card">
-        <div class="stat-title">Tổng Dung Lượng Đã Dùng</div>
-        <div class="stat-value" id="statTraffic">0.00 GB</div>
-        <div class="stat-sub">Băng thông toàn bộ proxy</div>
+
+      <!-- Card 2 -->
+      <div class="glass-card kpi-card" style="--kpi-accent: #06b6d4; --kpi-bg: rgba(6, 182, 212, 0.12); --kpi-border: rgba(6, 182, 212, 0.25); --kpi-color: #38bdf8;">
+        <div class="kpi-header">
+          <span class="kpi-title">Lưu Lượng Tiêu Thụ</span>
+          <div class="kpi-icon-wrap">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M12 2v20"/><path d="m17 5-5-3-5 3"/><path d="m17 19-5 3-5-3"/></svg>
+          </div>
+        </div>
+        <div class="kpi-value" id="kpiTraffic">0.00 GB</div>
+        <div class="kpi-desc">Tổng băng thông tải lên & tải về</div>
       </div>
-      <div class="stat-card">
-        <div class="stat-title">Dải IPv6 Subnet</div>
-        <div class="stat-value" style="font-size: 16px; font-family: monospace;" id="statPrefix">--</div>
-        <div class="stat-sub">18,446,744,073,709,551,616 IPs</div>
+
+      <!-- Card 3 -->
+      <div class="glass-card kpi-card" style="--kpi-accent: #8b5cf6; --kpi-bg: rgba(139, 92, 246, 0.12); --kpi-border: rgba(139, 92, 246, 0.25); --kpi-color: #a78bfa;">
+        <div class="kpi-header">
+          <span class="kpi-title">Dải Mạng IPv6 Subnet</span>
+          <div class="kpi-icon-wrap">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><circle cx="12" cy="12" r="10"/><line x1="2" x2="22" y1="12" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg>
+          </div>
+        </div>
+        <div class="kpi-value" style="font-size: 19px; font-family: 'JetBrains Mono', monospace;" id="kpiPrefix">--</div>
+        <div class="kpi-desc">Dải mạng Any-IP (Không gán eth0)</div>
       </div>
-      <div class="stat-card">
-        <div class="stat-title">IP VPS / Uptime</div>
-        <div class="stat-value" style="font-size: 18px;" id="statIP">--</div>
-        <div class="stat-sub" id="statUptime">Uptime: --</div>
+
+      <!-- Card 4 -->
+      <div class="glass-card kpi-card" style="--kpi-accent: #f59e0b; --kpi-bg: rgba(245, 158, 11, 0.12); --kpi-border: rgba(245, 158, 11, 0.25); --kpi-color: #fbbf24;">
+        <div class="kpi-header">
+          <span class="kpi-title">Thời Gian Hoạt Động</span>
+          <div class="kpi-icon-wrap">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+          </div>
+        </div>
+        <div class="kpi-value" id="kpiUptime">--</div>
+        <div class="kpi-desc" id="kpiHost">VPS: --</div>
       </div>
     </div>
 
-    <!-- Toolbar -->
-    <div class="toolbar">
-      <div style="display: flex; gap: 10px; align-items: center;">
-        <input type="text" id="searchInput" class="search-box" placeholder="🔍 Tìm theo tên, port, user..." oninput="filterTable()">
-        <button class="btn btn-secondary btn-sm" onclick="loadData()">🔄 Làm Mới</button>
+    <!-- Controls Toolbar -->
+    <div class="controls-toolbar">
+      <div style="display: flex; gap: 14px; align-items: center; flex-wrap: wrap;">
+        <!-- Status Tabs -->
+        <div class="tabs-group">
+          <button class="tab-btn active" onclick="setFilter('all', this)">Tất Cả</button>
+          <button class="tab-btn" onclick="setFilter('active', this)">🟢 Đang Chạy</button>
+          <button class="tab-btn" onclick="setFilter('expired', this)">🔴 Hết Hạn</button>
+          <button class="tab-btn" onclick="setFilter('disabled', this)">⚪ Đã Khóa</button>
+        </div>
+
+        <!-- Search Box -->
+        <div class="search-input-wrap">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><circle cx="11" cy="11" r="8"/><line x1="21" x2="16.65" y1="21" y2="16.65"/></svg>
+          <input type="text" id="searchInput" class="search-input" placeholder="Tìm theo tên khách, port, user..." oninput="applyFilters()">
+        </div>
       </div>
-      <button class="btn btn-primary" onclick="openCreateModal()">➕ Tạo Proxy Mới</button>
+
+      <div style="display: flex; gap: 10px;">
+        <button class="btn btn-secondary" onclick="loadData()">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
+          Làm Mới
+        </button>
+        <button class="btn btn-primary" onclick="openCreateModal()">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><line x1="12" x2="12" y1="5" y2="19"/><line x1="5" x2="19" y1="12" y2="12"/></svg>
+          Tạo Proxy Mới
+        </button>
+      </div>
     </div>
 
-    <!-- Table -->
-    <div class="table-card">
-      <table>
-        <thead>
-          <tr>
-            <th>Proxy / Khách Hàng</th>
-            <th>Cổng (Port)</th>
-            <th>Xác Thực (User:Pass)</th>
-            <th>Dung Lượng (GB)</th>
-            <th>Hạn Sử Dụng</th>
-            <th>Chế Độ Xoay</th>
-            <th>Trạng Thái</th>
-            <th style="text-align: right;">Thao Tác</th>
-          </tr>
-        </thead>
-        <tbody id="proxyTableBody">
-          <tr><td colspan="8" style="text-align: center; color: var(--text-muted); padding: 40px;">Đang tải dữ liệu...</td></tr>
-        </tbody>
-      </table>
+    <!-- Table Card -->
+    <div class="glass-card table-container">
+      <div class="table-responsive">
+        <table>
+          <thead>
+            <tr>
+              <th>Proxy / Khách Hàng</th>
+              <th>Cổng Kết Nối</th>
+              <th>Xác Thực (Auth)</th>
+              <th>Lưu Lượng Dùng</th>
+              <th>Hạn Sử Dụng</th>
+              <th>Chế Độ Xoay</th>
+              <th>Trạng Thái</th>
+              <th style="text-align: right;">Thao Tác</th>
+            </tr>
+          </thead>
+          <tbody id="proxyTableBody">
+            <tr>
+              <td colspan="8" style="text-align: center; color: var(--text-dim); padding: 50px;">
+                Đang nạp dữ liệu từ hệ thống...
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
     </div>
+
   </div>
 
   <!-- CREATE / EDIT MODAL -->
-  <div id="proxyModal" class="modal-overlay">
-    <div class="modal">
+  <div id="proxyModal" class="modal-backdrop">
+    <div class="modal-box">
       <div class="modal-header">
         <h3 id="modalTitle">Tạo Proxy Mới</h3>
-        <button class="btn btn-secondary btn-sm" onclick="closeModal('proxyModal')">✕</button>
+        <button class="btn btn-secondary btn-icon-only" onclick="closeModal('proxyModal')">
+          <svg style="width: 14px; height: 14px;" viewBox="0 0 24 24" fill="none" stroke="currentColor"><line x1="18" x2="6" y1="6" y2="18"/><line x1="6" x2="18" y1="6" y2="18"/></svg>
+        </button>
       </div>
       <form id="proxyForm" onsubmit="saveProxy(event)">
         <input type="hidden" id="proxyId">
         <div class="modal-body">
+          
           <div class="form-group">
-            <label>Tên Khách Hàng / Ghi Chú</label>
-            <input type="text" id="proxyName" class="form-control" required placeholder="VD: Khách Anh Tuấn - Dàn Nuôi FB">
+            <label class="form-label">Tên Khách Hàng / Nhãn Ghi Chú</label>
+            <input type="text" id="proxyName" class="form-control" required placeholder="VD: Khách Dàn Nuôi Facebook 01" oninput="updateLivePreview()">
           </div>
-          <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px;">
+
+          <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 14px;">
             <div class="form-group">
-              <label>Cổng Kết Nối (Port)</label>
-              <input type="number" id="proxyPort" class="form-control" required placeholder="10001">
+              <label class="form-label">Cổng Riêng (Port)</label>
+              <input type="number" id="proxyPort" class="form-control" required placeholder="10001" oninput="updateLivePreview()">
             </div>
             <div class="form-group">
-              <label>Chế Độ Xoay IP</label>
+              <label class="form-label">Chế Độ Xoay IPv6</label>
               <select id="proxyRotation" class="form-control" onchange="toggleStickyInput()">
-                <option value="request">Xoay mỗi Request (Mới 100%)</option>
-                <option value="sticky">Giữ IP X giây (Sticky)</option>
-                <option value="static">Cố định 1 IP (Tĩnh)</option>
+                <option value="request">Xoay Mỗi Request (100% Mới)</option>
+                <option value="sticky">Giữ IP X Giây (Sticky)</option>
+                <option value="static">Cố Định 1 IPv6 (Static)</option>
               </select>
             </div>
           </div>
+
           <div id="stickyGroup" class="form-group" style="display: none;">
-            <label>Thời Gian Giữ IP (Giây)</label>
+            <label class="form-label">Thời Gian Giữ Nguyên 1 IP (Giây)</label>
             <input type="number" id="proxyStickySec" class="form-control" placeholder="60" value="60">
           </div>
-          <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px;">
+
+          <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 14px;">
             <div class="form-group">
-              <label>Tài Khoản (Username)</label>
-              <input type="text" id="proxyUser" class="form-control" placeholder="Để trống nếu không cần">
+              <div class="form-label">
+                <span>Tài Khoản (User)</span>
+                <button type="button" class="btn btn-secondary btn-sm" style="padding: 2px 6px; font-size: 11px;" onclick="genRandomUser()">🎲 Random</button>
+              </div>
+              <input type="text" id="proxyUser" class="form-control" placeholder="Để trống nếu không cần" oninput="updateLivePreview()">
             </div>
             <div class="form-group">
-              <label>Mật Khẩu (Password)</label>
-              <input type="text" id="proxyPass" class="form-control" placeholder="Để trống nếu không cần">
+              <div class="form-label">
+                <span>Mật Khẩu (Pass)</span>
+                <button type="button" class="btn btn-secondary btn-sm" style="padding: 2px 6px; font-size: 11px;" onclick="genRandomPass()">🎲 Random</button>
+              </div>
+              <input type="text" id="proxyPass" class="form-control" placeholder="Để trống nếu không cần" oninput="updateLivePreview()">
             </div>
           </div>
-          <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px;">
+
+          <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 14px;">
             <div class="form-group">
-              <label>Giới Hạn Dung Lượng (GB)</label>
-              <input type="number" step="0.1" id="proxyMaxGB" class="form-control" placeholder="0 = Không giới hạn" value="0">
+              <label class="form-label">Hạn Mức Băng Thông (GB)</label>
+              <input type="number" step="0.5" id="proxyMaxGB" class="form-control" placeholder="0 = Không giới hạn" value="0">
             </div>
             <div class="form-group">
-              <label>Thời Hạn (Số Ngày)</label>
+              <label class="form-label">Thời Hạn Sử Dụng (Ngày)</label>
               <input type="number" id="proxyExpireDays" class="form-control" placeholder="0 = Vĩnh viễn" value="30">
             </div>
           </div>
+
+          <div class="form-group">
+            <label class="form-label" style="font-size: 12px; color: var(--text-dim);">Xem Trước Chuỗi Kết Nối Cho Khách:</label>
+            <div class="preview-proxy-card">
+              <span id="liveProxyPreview">--</span>
+              <button type="button" class="btn btn-secondary btn-sm" style="padding: 2px 8px;" onclick="copyLivePreview()">Copy</button>
+            </div>
+          </div>
+
         </div>
         <div class="modal-footer">
-          <button type="button" class="btn btn-secondary" onclick="closeModal('proxyModal')">Hủy</button>
-          <button type="submit" class="btn btn-primary">Lưu Proxy</button>
+          <button type="button" class="btn btn-secondary" onclick="closeModal('proxyModal')">Đóng</button>
+          <button type="submit" class="btn btn-primary" id="btnSubmitProxy">Lưu Cấu Hình</button>
         </div>
       </form>
     </div>
   </div>
 
-  <!-- EXPORT MODAL -->
-  <div id="exportModal" class="modal-overlay">
-    <div class="modal" style="max-width: 600px;">
+  <!-- QUICK TEST / SNIPPET MODAL -->
+  <div id="snippetModal" class="modal-backdrop">
+    <div class="modal-box" style="max-width: 620px;">
       <div class="modal-header">
-        <h3>Danh Sách Proxy (IP:Port:User:Pass)</h3>
-        <button class="btn btn-secondary btn-sm" onclick="closeModal('exportModal')">✕</button>
+        <h3 id="snippetModalTitle">Hướng Dẫn Kết Nối Proxy</h3>
+        <button class="btn btn-secondary btn-icon-only" onclick="closeModal('snippetModal')">
+          <svg style="width: 14px; height: 14px;" viewBox="0 0 24 24" fill="none" stroke="currentColor"><line x1="18" x2="6" y1="6" y2="18"/><line x1="6" x2="18" y1="6" y2="18"/></svg>
+        </button>
       </div>
       <div class="modal-body">
-        <p style="font-size: 13px; color: var(--text-muted);">Định dạng chuẩn để import thẳng vào AdsPower, GoLogin, Hidemyacc:</p>
-        <textarea id="exportText" class="form-control" rows="10" readonly style="font-family: monospace; font-size: 13px;"></textarea>
+        
+        <div class="form-group">
+          <label class="form-label">Định Dạng AdsPower / GoLogin / Hidemyacc:</label>
+          <div class="input-with-action">
+            <input type="text" id="snippetAntidetect" class="form-control" readonly style="font-family: 'JetBrains Mono', monospace;">
+            <button class="btn btn-secondary" onclick="copyInputVal('snippetAntidetect')">Copy</button>
+          </div>
+        </div>
+
+        <div class="form-group">
+          <label class="form-label">Lệnh Test cURL (Windows CMD / PowerShell / Linux):</label>
+          <textarea id="snippetCurl" class="form-control" rows="3" readonly style="font-family: 'JetBrains Mono', monospace; font-size: 12.5px;"></textarea>
+        </div>
+
+        <div class="form-group">
+          <label class="form-label">Code Mẫu Python (Requests):</label>
+          <textarea id="snippetPython" class="form-control" rows="4" readonly style="font-family: 'JetBrains Mono', monospace; font-size: 12px;"></textarea>
+        </div>
+
       </div>
       <div class="modal-footer">
-        <button class="btn btn-secondary" onclick="closeModal('exportModal')">Đóng</button>
-        <button class="btn btn-primary" onclick="copyExportText()">📋 Sao Chép Toàn Bộ</button>
+        <button class="btn btn-secondary" onclick="closeModal('snippetModal')">Đóng</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- EXPORT MODAL -->
+  <div id="exportModal" class="modal-backdrop">
+    <div class="modal-box" style="max-width: 600px;">
+      <div class="modal-header">
+        <h3>Xuất Toàn Bộ Danh Sách Proxy</h3>
+        <button class="btn btn-secondary btn-icon-only" onclick="closeModal('exportModal')">
+          <svg style="width: 14px; height: 14px;" viewBox="0 0 24 24" fill="none" stroke="currentColor"><line x1="18" x2="6" y1="6" y2="18"/><line x1="6" x2="18" y1="6" y2="18"/></svg>
+        </button>
+      </div>
+      <div class="modal-body">
+        <p style="font-size: 13px; color: var(--text-muted);">
+          Định dạng chuẩn <code>IP:Port:User:Pass</code>, có thể nhập hàng loạt vào mọi trình duyệt Antidetect:
+        </p>
+        <textarea id="exportText" class="form-control" rows="11" readonly style="font-family: 'JetBrains Mono', monospace; font-size: 13px;"></textarea>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-secondary" onclick="downloadExportFile()">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" x2="12" y1="15" y2="3"/></svg>
+          Tải File .txt
+        </button>
+        <button class="btn btn-primary" onclick="copyExportText()">Sao Chép Tất Cả</button>
       </div>
     </div>
   </div>
 
   <!-- SETTINGS MODAL -->
-  <div id="settingsModal" class="modal-overlay">
-    <div class="modal">
+  <div id="settingsModal" class="modal-backdrop">
+    <div class="modal-box">
       <div class="modal-header">
-        <h3>Cài Đặt Quản Trị</h3>
-        <button class="btn btn-secondary btn-sm" onclick="closeModal('settingsModal')">✕</button>
+        <h3>Cài Đặt Tài Khoản Quản Trị</h3>
+        <button class="btn btn-secondary btn-icon-only" onclick="closeModal('settingsModal')">
+          <svg style="width: 14px; height: 14px;" viewBox="0 0 24 24" fill="none" stroke="currentColor"><line x1="18" x2="6" y1="6" y2="18"/><line x1="6" x2="18" y1="6" y2="18"/></svg>
+        </button>
       </div>
       <form onsubmit="saveSettings(event)">
         <div class="modal-body">
           <div class="form-group">
-            <label>Mật khẩu hiện tại</label>
+            <label class="form-label">Mật Khẩu Hiện Tại</label>
             <input type="password" id="curPass" class="form-control" required placeholder="admin123">
           </div>
           <div class="form-group">
-            <label>Tài khoản mới (Username)</label>
-            <input type="text" id="newAdminUser" class="form-control" placeholder="admin">
+            <label class="form-label">Tài Khoản Mới (Username)</label>
+            <input type="text" id="newAdminUser" class="form-control" placeholder="Để trống nếu giữ nguyên">
           </div>
           <div class="form-group">
-            <label>Mật khẩu mới (Password)</label>
-            <input type="password" id="newAdminPass" class="form-control" placeholder="••••••••">
+            <label class="form-label">Mật Khẩu Mới (Password)</label>
+            <input type="password" id="newAdminPass" class="form-control" placeholder="Để trống nếu giữ nguyên">
           </div>
         </div>
         <div class="modal-footer">
           <button type="button" class="btn btn-secondary" onclick="closeModal('settingsModal')">Hủy</button>
-          <button type="submit" class="btn btn-primary">Cập Nhật</button>
+          <button type="submit" class="btn btn-primary">Cập Nhật Thông Tin</button>
         </div>
       </form>
     </div>
   </div>
 
-  <!-- TOAST -->
-  <div id="toast" class="toast">
-    <span id="toastIcon">✅</span>
-    <span id="toastMsg">Thao tác thành công</span>
-  </div>
+  <!-- TOAST CONTAINER -->
+  <div id="toastContainer" class="toast-container"></div>
 
   <script>
     let globalProxies = [];
     let publicIP = "";
+    let currentFilter = "all";
 
-    function showToast(msg, icon = "✅") {
-      const t = document.getElementById("toast");
-      document.getElementById("toastMsg").innerText = msg;
-      document.getElementById("toastIcon").innerText = icon;
-      t.classList.add("show");
-      setTimeout(() => t.classList.remove("show"), 3000);
+    function showToast(msg, type = "success") {
+      const container = document.getElementById("toastContainer");
+      const item = document.createElement("div");
+      item.className = "toast-item";
+      
+      let icon = '<svg style="width: 18px; height: 18px; stroke: #34d399;" viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg>';
+      if (type === "error") {
+        icon = '<svg style="width: 18px; height: 18px; stroke: #f43f5e;" viewBox="0 0 24 24" fill="none" stroke="currentColor"><circle cx="12" cy="12" r="10"/><line x1="15" x2="9" y1="9" y2="15"/><line x1="9" x2="15" y1="9" y2="15"/></svg>';
+      } else if (type === "info") {
+        icon = '<svg style="width: 18px; height: 18px; stroke: #38bdf8;" viewBox="0 0 24 24" fill="none" stroke="currentColor"><circle cx="12" cy="12" r="10"/><line x1="12" x2="12" y1="16" y2="12"/><line x1="12" x2="12.01" y1="8" y2="8"/></svg>';
+      }
+
+      item.innerHTML = icon + '<span>' + escapeHtml(msg) + '</span>';
+      container.appendChild(item);
+
+      setTimeout(() => {
+        item.style.opacity = '0';
+        item.style.transform = 'translateY(10px)';
+        item.style.transition = 'all 0.3s';
+        setTimeout(() => item.remove(), 300);
+      }, 3000);
     }
 
-    function openModal(id) { document.getElementById(id).style.display = "flex"; }
-    function closeModal(id) { document.getElementById(id).style.display = "none"; }
+    function openModal(id) {
+      document.getElementById(id).style.display = "flex";
+    }
+
+    function closeModal(id) {
+      document.getElementById(id).style.display = "none";
+    }
+
+    function setFilter(type, btn) {
+      currentFilter = type;
+      document.querySelectorAll(".tab-btn").forEach(b => b.classList.remove("active"));
+      btn.classList.add("active");
+      applyFilters();
+    }
 
     function toggleStickyInput() {
       const r = document.getElementById("proxyRotation").value;
       document.getElementById("stickyGroup").style.display = (r === "sticky") ? "flex" : "none";
+    }
+
+    function genRandomUser() {
+      document.getElementById("proxyUser").value = "user" + Math.floor(1000 + Math.random() * 9000);
+      updateLivePreview();
+    }
+
+    function genRandomPass() {
+      const chars = "abcdefghjkmnpqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+      let res = "";
+      for (let i = 0; i < 8; i++) res += chars.charAt(Math.floor(Math.random() * chars.length));
+      document.getElementById("proxyPass").value = res;
+      updateLivePreview();
+    }
+
+    function updateLivePreview() {
+      const port = document.getElementById("proxyPort").value || "PORT";
+      const u = document.getElementById("proxyUser").value;
+      const p = document.getElementById("proxyPass").value;
+      let s = (publicIP || "IP_VPS") + ":" + port;
+      if (u) s += ":" + u + ":" + p;
+      document.getElementById("liveProxyPreview").innerText = s;
+    }
+
+    function copyLivePreview() {
+      const text = document.getElementById("liveProxyPreview").innerText;
+      copyToClipboard(text);
     }
 
     async function checkAuth() {
@@ -900,7 +1761,7 @@ const dashboardHTML = `<!DOCTYPE html>
         showToast("Đăng nhập thành công!");
         checkAuth();
       } else {
-        showToast(data.error || "Sai tài khoản hoặc mật khẩu", "❌");
+        showToast(data.error || "Sai tài khoản hoặc mật khẩu", "error");
       }
     }
 
@@ -919,30 +1780,57 @@ const dashboardHTML = `<!DOCTYPE html>
         if (statsRes.ok) {
           const stats = await statsRes.json();
           publicIP = stats.public_ip;
-          document.getElementById("statActive").innerText = stats.active_proxies + " / " + stats.total_proxies;
-          document.getElementById("statTraffic").innerText = (stats.total_bytes / (1024*1024*1024)).toFixed(2) + " GB";
-          document.getElementById("statPrefix").innerText = stats.prefix;
-          document.getElementById("statIP").innerText = stats.public_ip;
-          document.getElementById("statUptime").innerText = "Uptime: " + stats.uptime;
-          document.getElementById("proxyPort").placeholder = stats.suggest_port;
+          document.getElementById("topPublicIP").innerText = stats.public_ip;
+          document.getElementById("kpiActive").innerText = stats.active_proxies + " / " + stats.total_proxies;
+          document.getElementById("kpiTraffic").innerText = (stats.total_bytes / (1024*1024*1024)).toFixed(2) + " GB";
+          document.getElementById("kpiPrefix").innerText = stats.prefix;
+          document.getElementById("kpiUptime").innerText = stats.uptime;
+          document.getElementById("kpiHost").innerText = "Máy chủ: " + stats.public_ip;
+
           if (!document.getElementById("proxyPort").value) {
             document.getElementById("proxyPort").value = stats.suggest_port;
+            updateLivePreview();
           }
         }
 
         if (proxiesRes.ok) {
           globalProxies = await proxiesRes.json();
-          renderTable(globalProxies);
+          applyFilters();
         }
       } catch (e) {
         console.error(e);
       }
     }
 
+    function applyFilters() {
+      const q = document.getElementById("searchInput").value.toLowerCase();
+      const now = new Date();
+
+      const filtered = globalProxies.filter(p => {
+        // Query match
+        const matchQ = p.name.toLowerCase().includes(q) ||
+                       p.port.toString().includes(q) ||
+                       (p.username && p.username.toLowerCase().includes(q));
+        if (!matchQ) return false;
+
+        // Status match
+        if (currentFilter === "active") {
+          return p.enabled && (!p.expires_at || new Date(p.expires_at) > now) && (p.max_bytes === 0 || p.bytes_used < p.max_bytes);
+        } else if (currentFilter === "expired") {
+          return (p.expires_at && new Date(p.expires_at) <= now) || (p.max_bytes > 0 && p.bytes_used >= p.max_bytes);
+        } else if (currentFilter === "disabled") {
+          return !p.enabled;
+        }
+        return true;
+      });
+
+      renderTable(filtered);
+    }
+
     function renderTable(list) {
       const tbody = document.getElementById("proxyTableBody");
       if (!list || list.length === 0) {
-        tbody.innerHTML = '<tr><td colspan="8" style="text-align: center; color: var(--text-muted); padding: 40px;">Chưa có proxy nào. Hãy bấm "Tạo Proxy Mới" ở góc trên bên phải!</td></tr>';
+        tbody.innerHTML = '<tr><td colspan="8" style="text-align: center; color: var(--text-dim); padding: 50px;">Không có proxy nào phù hợp với bộ lọc.</td></tr>';
         return;
       }
 
@@ -950,66 +1838,104 @@ const dashboardHTML = `<!DOCTYPE html>
         const usedGB = (p.bytes_used / (1024*1024*1024)).toFixed(2);
         const maxGB = p.max_bytes > 0 ? (p.max_bytes / (1024*1024*1024)).toFixed(2) : "∞";
         const percent = p.max_bytes > 0 ? Math.min(100, (p.bytes_used / p.max_bytes) * 100).toFixed(0) : 0;
+        const isQuotaFull = p.max_bytes > 0 && p.bytes_used >= p.max_bytes;
 
-        let statusBadge = '<span class="badge badge-success">🟢 Đang Chạy</span>';
+        const isExpired = p.expires_at && new Date(p.expires_at) < new Date();
+
+        let statusBadge = '<span class="badge badge-success"><span class="badge-dot"></span> Đang Chạy</span>';
         if (!p.enabled) {
-          statusBadge = '<span class="badge badge-muted">⚪ Đã Khóa</span>';
-        } else if (p.expires_at && new Date(p.expires_at) < new Date()) {
-          statusBadge = '<span class="badge badge-danger">🔴 Hết Hạn</span>';
-        } else if (p.max_bytes > 0 && p.bytes_used >= p.max_bytes) {
-          statusBadge = '<span class="badge badge-warning">🟠 Hết Dung Lượng</span>';
+          statusBadge = '<span class="badge badge-neutral"><span class="badge-dot"></span> Đã Khóa</span>';
+        } else if (isExpired) {
+          statusBadge = '<span class="badge badge-danger"><span class="badge-dot"></span> Hết Hạn</span>';
+        } else if (isQuotaFull) {
+          statusBadge = '<span class="badge badge-warning"><span class="badge-dot"></span> Hết GB</span>';
         }
 
-        let rotBadge = '<span class="badge badge-muted">Mỗi Request</span>';
+        let rotBadge = '<span class="badge badge-indigo">Xoay Mỗi Request</span>';
         if (p.rotation_type === 'sticky') {
-          rotBadge = '<span class="badge badge-muted">Giữ ' + (p.sticky_sec || 60) + 's</span>';
+          rotBadge = '<span class="badge badge-neutral" style="color: #38bdf8;">Giữ ' + (p.sticky_sec || 60) + 's</span>';
         } else if (p.rotation_type === 'static') {
-          rotBadge = '<span class="badge badge-muted">Cố Định 1 IP</span>';
+          rotBadge = '<span class="badge badge-neutral" style="color: #c084fc;">Cố Định 1 IP</span>';
         }
 
-        let expireStr = "Vĩnh viễn";
+        let expireStr = '<span style="color: var(--text-dim);">Vĩnh viễn</span>';
         if (p.expires_at) {
           const exp = new Date(p.expires_at);
           const diffDays = Math.ceil((exp - new Date()) / (1000*60*60*24));
-          expireStr = diffDays > 0 ? (diffDays + " ngày nữa") : "Đã hết hạn";
+          if (diffDays > 0) {
+            expireStr = '<span style="color: #34d399; font-weight: 600;">Còn ' + diffDays + ' ngày</span>';
+          } else {
+            expireStr = '<span style="color: #f43f5e; font-weight: 600;">Đã hết hạn</span>';
+          }
         }
 
         const authStr = (p.username && p.password) ? (p.username + ":" + p.password) : "Không Auth";
         const proxyString = publicIP + ":" + p.port + (p.username ? (":" + p.username + ":" + p.password) : "");
 
         return '<tr>' +
-          '<td><strong>' + escapeHtml(p.name) + '</strong></td>' +
-          '<td><span style="font-weight: 700; color: #a5b4fc;">' + p.port + '</span> <span style="font-size: 11px; color: var(--text-muted);">(HTTP/SOCKS5)</span></td>' +
-          '<td><span class="auth-box" onclick="copyToClipboard(\'' + proxyString + '\')" title="Bấm để copy chuỗi proxy">' + escapeHtml(authStr) + '</span></td>' +
           '<td>' +
-            '<div>' + usedGB + ' / ' + maxGB + ' GB</div>' +
-            (p.max_bytes > 0 ? '<div class="progress-bar"><div class="progress-fill" style="width: ' + percent + '%;"></div></div>' : '') +
+            '<div class="client-title">' +
+              '<div class="client-avatar">⚡</div>' +
+              '<div>' +
+                '<div>' + escapeHtml(p.name) + '</div>' +
+                '<div style="font-size: 11.5px; color: var(--text-dim); font-weight: normal;">ID: ' + p.id.slice(0, 8) + '</div>' +
+              '</div>' +
+            '</div>' +
+          '</td>' +
+          '<td>' +
+            '<span class="port-pill" onclick="copyToClipboard(\'' + p.port + '\')" title="Bấm để copy Port">' + p.port + '</span>' +
+          '</td>' +
+          '<td>' +
+            '<span class="auth-snippet" onclick="copyToClipboard(\'' + proxyString + '\')" title="Bấm để copy chuỗi proxy">' +
+              '<svg style="width: 13px; height: 13px; stroke: #94a3b8;" viewBox="0 0 24 24" fill="none" stroke="currentColor"><rect width="18" height="11" x="3" y="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>' +
+              escapeHtml(authStr) +
+            '</span>' +
+          '</td>' +
+          '<td>' +
+            '<div class="traffic-box">' +
+              '<div class="traffic-label">' +
+                '<span>' + usedGB + ' GB</span>' +
+                '<span style="color: var(--text-dim); font-weight: normal;">/ ' + maxGB + ' GB</span>' +
+              '</div>' +
+              '<div class="progress-track">' +
+                '<div class="progress-fill ' + (isQuotaFull ? "full" : "") + '" style="width: ' + (p.max_bytes > 0 ? percent : 100) + '%;"></div>' +
+              '</div>' +
+            '</div>' +
           '</td>' +
           '<td>' + expireStr + '</td>' +
           '<td>' + rotBadge + '</td>' +
           '<td>' + statusBadge + '</td>' +
-          '<td style="text-align: right;">' +
-            '<button class="btn btn-secondary btn-sm" style="margin-right: 4px;" onclick="copyToClipboard(\'' + proxyString + '\')" title="Copy chuỗi proxy">📋</button>' +
-            '<button class="btn btn-secondary btn-sm" style="margin-right: 4px;" onclick="resetTraffic(\'' + p.id + '\')" title="Reset dung lượng về 0">🔄 0 GB</button>' +
-            '<button class="btn btn-secondary btn-sm" style="margin-right: 4px;" onclick="toggleEnable(\'' + p.id + '\', ' + !p.enabled + ')">' + (p.enabled ? "Khóa" : "Mở") + '</button>' +
-            '<button class="btn btn-danger btn-sm" onclick="deleteProxy(\'' + p.id + '\')" title="Xóa">🗑️</button>' +
+          '<td>' +
+            '<div class="actions-group">' +
+              '<button class="btn btn-secondary btn-icon-only" onclick="copyToClipboard(\'' + proxyString + '\')" title="Copy chuỗi proxy">' +
+                '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><rect width="14" height="14" x="8" y="8" rx="2" ry="2"/><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"/></svg>' +
+              '</button>' +
+              '<button class="btn btn-secondary btn-icon-only" onclick="openSnippetModal(\'' + p.id + '\')" title="Xem hướng dẫn kết nối & code test">' +
+                '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></svg>' +
+              '</button>' +
+              '<button class="btn btn-secondary btn-icon-only" onclick="openEditModal(\'' + p.id + '\')" title="Chỉnh sửa proxy">' +
+                '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/></svg>' +
+              '</button>' +
+              '<button class="btn btn-secondary btn-icon-only" onclick="resetTraffic(\'' + p.id + '\')" title="Reset dung lượng về 0 GB">' +
+                '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><polyline points="1 4 1 10 7 10"/><path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"/></svg>' +
+              '</button>' +
+              '<button class="btn btn-secondary btn-icon-only" onclick="toggleEnable(\'' + p.id + '\', ' + !p.enabled + ')" title="' + (p.enabled ? "Khóa proxy" : "Mở khóa proxy") + '">' +
+                (p.enabled 
+                  ? '<svg style="stroke: #f59e0b;" viewBox="0 0 24 24" fill="none" stroke="currentColor"><rect width="18" height="11" x="3" y="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>'
+                  : '<svg style="stroke: #10b981;" viewBox="0 0 24 24" fill="none" stroke="currentColor"><rect width="18" height="11" x="3" y="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 9.9-1"/></svg>') +
+              '</button>' +
+              '<button class="btn btn-danger btn-icon-only" onclick="deleteProxy(\'' + p.id + '\')" title="Xóa">' +
+                '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>' +
+              '</button>' +
+            '</div>' +
           '</td>' +
         '</tr>';
       }).join('');
     }
 
-    function filterTable() {
-      const q = document.getElementById("searchInput").value.toLowerCase();
-      const filtered = globalProxies.filter(p => 
-        p.name.toLowerCase().includes(q) ||
-        p.port.toString().includes(q) ||
-        (p.username && p.username.toLowerCase().includes(q))
-      );
-      renderTable(filtered);
-    }
-
     function openCreateModal() {
       document.getElementById("modalTitle").innerText = "Tạo Proxy Mới";
+      document.getElementById("btnSubmitProxy").innerText = "Tạo Proxy Mới";
       document.getElementById("proxyId").value = "";
       document.getElementById("proxyName").value = "";
       document.getElementById("proxyUser").value = "user" + Math.floor(1000 + Math.random() * 9000);
@@ -1018,11 +1944,40 @@ const dashboardHTML = `<!DOCTYPE html>
       document.getElementById("proxyExpireDays").value = "30";
       document.getElementById("proxyRotation").value = "request";
       toggleStickyInput();
+      updateLivePreview();
+      openModal("proxyModal");
+    }
+
+    function openEditModal(id) {
+      const p = globalProxies.find(x => x.id === id);
+      if (!p) return;
+
+      document.getElementById("modalTitle").innerText = "Chỉnh Sửa Proxy: " + p.name;
+      document.getElementById("btnSubmitProxy").innerText = "Lưu Thay Đổi";
+      document.getElementById("proxyId").value = p.id;
+      document.getElementById("proxyName").value = p.name;
+      document.getElementById("proxyPort").value = p.port;
+      document.getElementById("proxyUser").value = p.username || "";
+      document.getElementById("proxyPass").value = p.password || "";
+      document.getElementById("proxyMaxGB").value = p.max_bytes > 0 ? (p.max_bytes / (1024*1024*1024)).toFixed(1) : 0;
+      
+      let expDays = 0;
+      if (p.expires_at) {
+        const diff = Math.ceil((new Date(p.expires_at) - new Date()) / (1000*60*60*24));
+        expDays = diff > 0 ? diff : 0;
+      }
+      document.getElementById("proxyExpireDays").value = expDays;
+      document.getElementById("proxyRotation").value = p.rotation_type || "request";
+      document.getElementById("proxyStickySec").value = p.sticky_sec || 60;
+
+      toggleStickyInput();
+      updateLivePreview();
       openModal("proxyModal");
     }
 
     async function saveProxy(e) {
       e.preventDefault();
+      const id = document.getElementById("proxyId").value;
       const payload = {
         name: document.getElementById("proxyName").value,
         port: parseInt(document.getElementById("proxyPort").value) || 0,
@@ -1034,18 +1989,21 @@ const dashboardHTML = `<!DOCTYPE html>
         sticky_sec: parseInt(document.getElementById("proxyStickySec").value) || 60
       };
 
-      const res = await fetch("/api/proxies", {
-        method: "POST",
+      const url = id ? ("/api/proxies/" + id) : "/api/proxies";
+      const method = id ? "PUT" : "POST";
+
+      const res = await fetch(url, {
+        method: method,
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(payload)
       });
       const data = await res.json();
       if (res.ok) {
-        showToast("Đã tạo proxy thành công!");
+        showToast(id ? "Đã cập nhật proxy thành công!" : "Đã tạo proxy mới thành công!");
         closeModal("proxyModal");
         loadData();
       } else {
-        showToast(data.error || "Lỗi tạo proxy", "❌");
+        showToast(data.error || "Có lỗi xảy ra", "error");
       }
     }
 
@@ -1065,24 +2023,45 @@ const dashboardHTML = `<!DOCTYPE html>
       if (!confirm("Bạn có chắc chắn muốn reset dung lượng đã dùng về 0 GB?")) return;
       const res = await fetch("/api/proxies/" + id + "/reset", { method: "POST" });
       if (res.ok) {
-        showToast("Đã reset dung lượng về 0 GB");
+        showToast("Đã reset dung lượng về 0 GB!");
         loadData();
       }
     }
 
     async function deleteProxy(id) {
-      if (!confirm("Bạn có chắc chắn muốn xóa proxy này?")) return;
+      if (!confirm("Bạn có chắc chắn muốn xóa vĩnh viễn proxy này?")) return;
       const res = await fetch("/api/proxies/" + id, { method: "DELETE" });
       if (res.ok) {
-        showToast("Đã xóa proxy");
+        showToast("Đã xóa proxy thành công!");
         loadData();
       }
+    }
+
+    function openSnippetModal(id) {
+      const p = globalProxies.find(x => x.id === id);
+      if (!p) return;
+
+      document.getElementById("snippetModalTitle").innerText = "Cấu Hình Kết Nối: " + p.name;
+      const authPart = (p.username && p.password) ? (p.username + ":" + p.password) : "";
+      
+      const antidetectStr = publicIP + ":" + p.port + (authPart ? (":" + authPart) : "");
+      document.getElementById("snippetAntidetect").value = antidetectStr;
+
+      const authCurl = authPart ? (" -U " + authPart) : "";
+      const curlStr = "curl.exe -s -x http://" + publicIP + ":" + p.port + authCurl + " https://api64.ipify.org";
+      document.getElementById("snippetCurl").value = curlStr;
+
+      const pyAuth = authPart ? (p.username + ":" + p.password + "@") : "";
+      const pyStr = "import requests\n\nproxy = 'http://" + pyAuth + publicIP + ":" + p.port + "'\nres = requests.get('https://api64.ipify.org?format=json', proxies={'http': proxy, 'https': proxy})\nprint('IPv6 xoay:', res.json()['ip'])";
+      document.getElementById("snippetPython").value = pyStr;
+
+      openModal("snippetModal");
     }
 
     async function openExportModal() {
       const res = await fetch("/api/export");
       const text = await res.text();
-      document.getElementById("exportText").value = text;
+      document.getElementById("exportText").value = text || "Chưa có proxy nào đang hoạt động.";
       openModal("exportModal");
     }
 
@@ -1093,9 +2072,25 @@ const dashboardHTML = `<!DOCTYPE html>
       showToast("Đã sao chép toàn bộ danh sách proxy!");
     }
 
+    function downloadExportFile() {
+      const text = document.getElementById("exportText").value;
+      const blob = new Blob([text], { type: "text/plain;charset=utf-8" });
+      const a = document.createElement("a");
+      a.href = URL.createObjectURL(blob);
+      a.download = "proxies_" + (new Date().toISOString().slice(0, 10)) + ".txt";
+      a.click();
+      showToast("Đã tải file text danh sách proxy!");
+    }
+
+    function copyInputVal(id) {
+      const v = document.getElementById(id).value;
+      copyToClipboard(v);
+    }
+
     function copyToClipboard(text) {
+      if (!text) return;
       navigator.clipboard.writeText(text);
-      showToast("Đã copy: " + text);
+      showToast("Đã sao chép: " + text, "info");
     }
 
     function openSettingsModal() {
@@ -1118,10 +2113,10 @@ const dashboardHTML = `<!DOCTYPE html>
       });
       const data = await res.json();
       if (res.ok) {
-        showToast("Đã đổi thông tin đăng nhập thành công!");
+        showToast("Đã đổi thông tin quản trị thành công!");
         closeModal("settingsModal");
       } else {
-        showToast(data.error || "Lỗi đổi thông tin", "❌");
+        showToast(data.error || "Lỗi cập nhật mật khẩu", "error");
       }
     }
 
@@ -1130,7 +2125,7 @@ const dashboardHTML = `<!DOCTYPE html>
       return str.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
     }
 
-    // Init
+    // Khởi tạo
     checkAuth();
   </script>
 </body>
