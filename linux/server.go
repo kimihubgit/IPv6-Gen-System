@@ -178,6 +178,12 @@ func (pl *PortListener) serve() {
 
 // handleConn determines if incoming connection is SOCKS5 (0x05) or HTTP/HTTPS
 func (pl *PortListener) handleConn(rawConn net.Conn) {
+	if tcp, ok := rawConn.(*net.TCPConn); ok {
+		_ = tcp.SetNoDelay(true)
+		_ = tcp.SetKeepAlive(true)
+		_ = tcp.SetKeepAlivePeriod(30 * time.Second)
+	}
+
 	conn := &CountingConn{
 		Conn:    rawConn,
 		account: pl.account,
@@ -369,6 +375,37 @@ func (pl *PortListener) handleHTTP(conn *CountingConn, reader *bufio.Reader) {
 	}
 }
 
+// High-concurrency zero-allocation buffer pool for streaming
+var bufferPool = sync.Pool{
+	New: func() interface{} {
+		b := make([]byte, 32*1024)
+		return &b
+	},
+}
+
+func relayBidirectional(conn1, conn2 net.Conn) {
+	var wg sync.WaitGroup
+	wg.Add(2)
+
+	pipe := func(dst, src net.Conn) {
+		defer wg.Done()
+		bufPtr := bufferPool.Get().(*[]byte)
+		defer bufferPool.Put(bufPtr)
+
+		_, _ = io.CopyBuffer(dst, src, *bufPtr)
+		if tcpConn, ok := dst.(*net.TCPConn); ok {
+			_ = tcpConn.CloseWrite()
+		} else {
+			_ = dst.Close()
+		}
+	}
+
+	go pipe(conn1, conn2)
+	go pipe(conn2, conn1)
+
+	wg.Wait()
+}
+
 func (pl *PortListener) handleHTTPSConnect(clientConn *CountingConn, req *http.Request) {
 	destConn, outIP, err := pl.dialTarget(req.Host)
 	if err != nil {
@@ -377,6 +414,12 @@ func (pl *PortListener) handleHTTPSConnect(clientConn *CountingConn, req *http.R
 		return
 	}
 	defer destConn.Close()
+
+	if tcp, ok := destConn.(*net.TCPConn); ok {
+		_ = tcp.SetNoDelay(true)
+		_ = tcp.SetKeepAlive(true)
+		_ = tcp.SetKeepAlivePeriod(30 * time.Second)
+	}
 
 	_, _ = clientConn.Write([]byte("HTTP/1.1 200 Connection Established\r\n\r\n"))
 
@@ -391,8 +434,7 @@ func (pl *PortListener) handleHTTPSConnect(clientConn *CountingConn, req *http.R
 		account: pl.account,
 	}
 
-	go io.Copy(destCounting, clientConn)
-	io.Copy(clientConn, destCounting)
+	relayBidirectional(clientConn, destCounting)
 }
 
 func (pl *PortListener) handlePlainHTTP(clientConn *CountingConn, req *http.Request) {
@@ -585,6 +627,12 @@ func (pl *PortListener) handleSOCKS5(clientConn *CountingConn, reader *bufio.Rea
 	// SOCKS5 reply success
 	_, _ = clientConn.Write([]byte{0x05, 0x00, 0x00, 0x01, 0, 0, 0, 0, 0, 0})
 
+	if tcp, ok := destConn.(*net.TCPConn); ok {
+		_ = tcp.SetNoDelay(true)
+		_ = tcp.SetKeepAlive(true)
+		_ = tcp.SetKeepAlivePeriod(30 * time.Second)
+	}
+
 	if outIP != nil {
 		log.Printf("[Port %d][%s] SOCKS5 %s -> Outbound IPv6: %s", pl.account.Port, pl.account.Name, targetAddr, outIP.String())
 	} else {
@@ -596,6 +644,5 @@ func (pl *PortListener) handleSOCKS5(clientConn *CountingConn, reader *bufio.Rea
 		account: pl.account,
 	}
 
-	go io.Copy(destCounting, clientConn)
-	io.Copy(clientConn, destCounting)
+	relayBidirectional(clientConn, destCounting)
 }

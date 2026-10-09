@@ -32,6 +32,22 @@ if [ "$MODE" -eq 1 ]; then
     read -p "Cong Web Dashboard [9090]: " WEB_PORT
     WEB_PORT=${WEB_PORT:-9090}
 
+    # Tối ưu hóa kernel Linux cho proxy luồng cao
+    cat << 'SYSCTL_EOF' > /etc/sysctl.d/99-ipv6-proxy.conf
+fs.file-max = 2097152
+net.core.somaxconn = 65535
+net.ipv4.tcp_max_syn_backlog = 65535
+net.core.netdev_max_backlog = 65535
+net.ipv4.tcp_rmem = 4096 87380 16777216
+net.ipv4.tcp_wmem = 4096 65536 16777216
+net.ipv6.neigh.default.gc_thresh1 = 4096
+net.ipv6.neigh.default.gc_thresh2 = 8192
+net.ipv6.neigh.default.gc_thresh3 = 16384
+net.ipv6.ip_nonlocal_bind = 1
+net.ipv6.conf.all.forwarding = 1
+SYSCTL_EOF
+    sysctl --system >/dev/null 2>&1
+
     cat <<EOF > "$SERVICE_FILE"
 [Unit]
 Description=IPv6 Proxy Hub - Web Dashboard & Multi-Port Server
@@ -43,6 +59,9 @@ WorkingDirectory=$DIR
 ExecStart=$DIR/ipv6-gen-linux -action server -iface $IFACE -prefix $PREFIX -web-port $WEB_PORT -data $DIR/data/proxies.json
 Restart=always
 RestartSec=5
+LimitNOFILE=1048576
+LimitNPROC=512000
+TasksMax=infinity
 
 [Install]
 WantedBy=multi-user.target

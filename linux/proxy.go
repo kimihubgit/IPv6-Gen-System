@@ -35,6 +35,13 @@ type RotatingProxy struct {
 func SetupAnyIP(iface string, ipNet *net.IPNet) error {
 	_ = exec.Command("sysctl", "-w", "net.ipv6.ip_nonlocal_bind=1").Run()
 	_ = exec.Command("sysctl", "-w", "net.ipv6.conf.all.forwarding=1").Run()
+	_ = exec.Command("sysctl", "-w", "fs.file-max=2097152").Run()
+	_ = exec.Command("sysctl", "-w", "net.core.somaxconn=65535").Run()
+	_ = exec.Command("sysctl", "-w", "net.ipv4.tcp_max_syn_backlog=65535").Run()
+	_ = exec.Command("sysctl", "-w", "net.core.netdev_max_backlog=65535").Run()
+	_ = exec.Command("sysctl", "-w", "net.ipv6.neigh.default.gc_thresh1=4096").Run()
+	_ = exec.Command("sysctl", "-w", "net.ipv6.neigh.default.gc_thresh2=8192").Run()
+	_ = exec.Command("sysctl", "-w", "net.ipv6.neigh.default.gc_thresh3=16384").Run()
 	_ = exec.Command("ip", "link", "set", iface, "promisc", "on").Run()
 	_ = exec.Command("ip", "link", "set", iface, "mtu", "1440").Run()
 	prefixStr := ipNet.String()
