@@ -262,22 +262,52 @@ func (pl *PortListener) PickIPv6() net.IP {
 
 // dialTarget connects outbound binding to the chosen IPv6
 func (pl *PortListener) dialTarget(target string) (net.Conn, net.IP, error) {
-	outIP := pl.PickIPv6()
-	var dialer net.Dialer
-	dialer.Timeout = 4 * time.Second
+	host, port, err := net.SplitHostPort(target)
+	if err != nil {
+		host = target
+		port = "80"
+	}
 
-	if outIP != nil {
-		dialer.LocalAddr = &net.TCPAddr{
-			IP: outIP,
+	// Kiểm tra xem đích đến có hỗ trợ IPv6 không
+	hasIPv6 := false
+	ips, lookupErr := net.LookupIP(host)
+	if lookupErr == nil {
+		for _, ip := range ips {
+			if ip.To4() == nil {
+				hasIPv6 = true
+				break
+			}
 		}
-		// 1. Try tcp6 with rotated IPv6 first
-		conn, err := dialer.Dial("tcp6", target)
-		if err == nil {
-			return conn, outIP, nil
+	} else {
+		cleanHost := strings.Trim(host, "[]")
+		if parsedIP := net.ParseIP(cleanHost); parsedIP != nil && parsedIP.To4() == nil {
+			hasIPv6 = true
 		}
 	}
 
-	// 2. Fallback to direct dialer (if destination is IPv4-only or IPv6 outbound fails)
+	// 1. Nếu đích đến hỗ trợ IPv6, bắt buộc dùng IPv6 xoay và thử tối đa 2 IP khác nhau
+	if hasIPv6 {
+		for attempt := 0; attempt < 2; attempt++ {
+			outIP := pl.PickIPv6()
+			if outIP == nil {
+				break
+			}
+			dialer := net.Dialer{
+				Timeout: 6 * time.Second,
+				LocalAddr: &net.TCPAddr{
+					IP: outIP,
+				},
+			}
+			conn, dialErr := dialer.Dial("tcp6", net.JoinHostPort(host, port))
+			if dialErr == nil {
+				return conn, outIP, nil
+			}
+			log.Printf("[Port %d] Thử kết nối IPv6 lần %d qua %s gặp lỗi: %v", pl.account.Port, attempt+1, outIP.String(), dialErr)
+		}
+		return nil, nil, fmt.Errorf("không thể kết nối IPv6 tới %s", target)
+	}
+
+	// 2. Chỉ dùng IPv4 nếu đích đến thuần IPv4 (không có bản ghi IPv6 như httpbin.org)
 	var fallbackDialer net.Dialer
 	fallbackDialer.Timeout = 6 * time.Second
 	conn, err := fallbackDialer.Dial("tcp", target)

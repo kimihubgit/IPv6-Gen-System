@@ -35,9 +35,11 @@ type RotatingProxy struct {
 func SetupAnyIP(iface string, ipNet *net.IPNet) error {
 	_ = exec.Command("sysctl", "-w", "net.ipv6.ip_nonlocal_bind=1").Run()
 	_ = exec.Command("sysctl", "-w", "net.ipv6.conf.all.forwarding=1").Run()
+	_ = exec.Command("ip", "link", "set", iface, "promisc", "on").Run()
+	_ = exec.Command("ip", "link", "set", iface, "mtu", "1440").Run()
 	prefixStr := ipNet.String()
 	// Always bind Any-IP to loopback lo (ndppd on eth0 answers the external router)
-	_ = exec.Command("ip", "-6", "route", "add", "local", prefixStr, "dev", "lo").Run()
+	_ = exec.Command("ip", "-6", "route", "replace", "local", prefixStr, "dev", "lo").Run()
 	return nil
 }
 
