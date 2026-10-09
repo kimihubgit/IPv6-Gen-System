@@ -77,10 +77,8 @@ func (m *MultiProxyManager) Start() error {
 
 	// 2. Start listeners for all accounts
 	for _, acc := range m.store.GetAll() {
-		if acc.Enabled {
-			if err := m.startListenerLocked(acc); err != nil {
-				log.Printf("⚠️ Không thể mở port %d cho proxy '%s': %v", acc.Port, acc.Name, err)
-			}
+		if err := m.startListenerLocked(acc); err != nil {
+			log.Printf("⚠️ Không thể mở port %d cho proxy '%s': %v", acc.Port, acc.Name, err)
 		}
 	}
 
@@ -108,16 +106,15 @@ func (m *MultiProxyManager) SyncAccount(acc *ProxyAccount) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	// Stop existing listener on this port if any
+	// If listener already exists on this port, keep socket open and update account pointer
 	if pl, exists := m.listeners[acc.Port]; exists {
-		_ = pl.listener.Close()
-		delete(m.listeners, acc.Port)
+		pl.account = acc
+		log.Printf("🔄 Đã cập nhật proxy [%s] trên cổng %d (Enabled=%v)", acc.Name, acc.Port, acc.Enabled)
+		return nil
 	}
 
-	if acc.Enabled {
-		return m.startListenerLocked(acc)
-	}
-	return nil
+	// If port is not yet listening, start listening
+	return m.startListenerLocked(acc)
 }
 
 // RemoveAccount stops the listener for a deleted account
@@ -190,6 +187,18 @@ func (pl *PortListener) handleConn(rawConn net.Conn) {
 	// Check if proxy account is valid
 	if ok, reason := pl.account.CanAccess(); !ok {
 		log.Printf("[Từ chối Port %d - %s] %s", pl.account.Port, pl.account.Name, reason)
+		bufReader := bufio.NewReader(conn)
+		firstByte, err := bufReader.Peek(1)
+		if err == nil {
+			if firstByte[0] == 0x05 {
+				// SOCKS5 rejection
+				_, _ = conn.Write([]byte{0x05, 0x01})
+			} else {
+				// HTTP rejection with 403 Forbidden
+				resp := fmt.Sprintf("HTTP/1.1 403 Forbidden\r\nContent-Type: text/plain; charset=utf-8\r\nProxy-Connection: close\r\nConnection: close\r\n\r\n[Proxy Hub] %s\r\n", reason)
+				_, _ = conn.Write([]byte(resp))
+			}
+		}
 		return
 	}
 
@@ -255,29 +264,27 @@ func (pl *PortListener) PickIPv6() net.IP {
 func (pl *PortListener) dialTarget(target string) (net.Conn, net.IP, error) {
 	outIP := pl.PickIPv6()
 	var dialer net.Dialer
-	dialer.Timeout = 10 * time.Second
+	dialer.Timeout = 4 * time.Second
 
 	if outIP != nil {
 		dialer.LocalAddr = &net.TCPAddr{
 			IP: outIP,
 		}
-		// 1. Try tcp6 first
+		// 1. Try tcp6 with rotated IPv6 first
 		conn, err := dialer.Dial("tcp6", target)
-		if err == nil {
-			return conn, outIP, nil
-		}
-		// 2. Try generic tcp
-		conn, err = dialer.Dial("tcp", target)
 		if err == nil {
 			return conn, outIP, nil
 		}
 	}
 
-	// 3. Fallback to direct dialer (if destination is IPv4-only)
+	// 2. Fallback to direct dialer (if destination is IPv4-only or IPv6 outbound fails)
 	var fallbackDialer net.Dialer
-	fallbackDialer.Timeout = 10 * time.Second
+	fallbackDialer.Timeout = 6 * time.Second
 	conn, err := fallbackDialer.Dial("tcp", target)
-	return conn, nil, err
+	if err == nil {
+		return conn, nil, nil
+	}
+	return nil, nil, err
 }
 
 // ----------------------------------------------------------------------
@@ -345,6 +352,8 @@ func (pl *PortListener) handleHTTPSConnect(clientConn *CountingConn, req *http.R
 
 	if outIP != nil {
 		log.Printf("[Port %d][%s] CONNECT %s -> Outbound IPv6: %s", pl.account.Port, pl.account.Name, req.Host, outIP.String())
+	} else {
+		log.Printf("[Port %d][%s] CONNECT %s -> Outbound IPv4 (Fallback)", pl.account.Port, pl.account.Name, req.Host)
 	}
 
 	destCounting := &CountingConn{
@@ -371,6 +380,8 @@ func (pl *PortListener) handlePlainHTTP(clientConn *CountingConn, req *http.Requ
 			conn, outIP, err := pl.dialTarget(addr)
 			if outIP != nil {
 				log.Printf("[Port %d][%s] HTTP %s -> Outbound IPv6: %s", pl.account.Port, pl.account.Name, req.URL.Host, outIP.String())
+			} else if err == nil {
+				log.Printf("[Port %d][%s] HTTP %s -> Outbound IPv4 (Fallback)", pl.account.Port, pl.account.Name, req.URL.Host)
 			}
 			return &CountingConn{Conn: conn, account: pl.account}, err
 		},
@@ -546,6 +557,8 @@ func (pl *PortListener) handleSOCKS5(clientConn *CountingConn, reader *bufio.Rea
 
 	if outIP != nil {
 		log.Printf("[Port %d][%s] SOCKS5 %s -> Outbound IPv6: %s", pl.account.Port, pl.account.Name, targetAddr, outIP.String())
+	} else {
+		log.Printf("[Port %d][%s] SOCKS5 %s -> Outbound IPv4 (Fallback)", pl.account.Port, pl.account.Name, targetAddr)
 	}
 
 	destCounting := &CountingConn{

@@ -11,7 +11,6 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"syscall"
@@ -35,20 +34,16 @@ type RotatingProxy struct {
 // SetupAnyIP configures Linux kernel route and sysctl for on-the-fly nonlocal binding
 func SetupAnyIP(iface string, ipNet *net.IPNet) error {
 	_ = exec.Command("sysctl", "-w", "net.ipv6.ip_nonlocal_bind=1").Run()
+	_ = exec.Command("sysctl", "-w", "net.ipv6.conf.all.forwarding=1").Run()
 	prefixStr := ipNet.String()
-	cmd := exec.Command("ip", "-6", "route", "add", "local", prefixStr, "dev", iface)
-	out, err := cmd.CombinedOutput()
-	if err != nil && !strings.Contains(string(out), "File exists") {
-		// Fallback to lo
-		_ = exec.Command("ip", "-6", "route", "add", "local", prefixStr, "dev", "lo").Run()
-	}
+	// Always bind Any-IP to loopback lo (ndppd on eth0 answers the external router)
+	_ = exec.Command("ip", "-6", "route", "add", "local", prefixStr, "dev", "lo").Run()
 	return nil
 }
 
 // TeardownAnyIP removes the local route on stop
 func TeardownAnyIP(iface string, ipNet *net.IPNet) {
 	prefixStr := ipNet.String()
-	_ = exec.Command("ip", "-6", "route", "del", "local", prefixStr, "dev", iface).Run()
 	_ = exec.Command("ip", "-6", "route", "del", "local", prefixStr, "dev", "lo").Run()
 }
 
