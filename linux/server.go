@@ -254,7 +254,7 @@ func (pl *PortListener) PickIPv6() net.IP {
 		acc.currentStickyIP = newIP.String()
 		sec := acc.StickySec
 		if sec <= 0 {
-			sec = 60
+			sec = 10
 		}
 		acc.stickyExpireAt = time.Now().Add(time.Duration(sec) * time.Second)
 		return newIP

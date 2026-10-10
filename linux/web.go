@@ -283,7 +283,7 @@ func (ws *WebServer) handleProxies(w http.ResponseWriter, r *http.Request) {
 
 		stickySec := req.StickySec
 		if stickySec <= 0 {
-			stickySec = 60
+			stickySec = 10
 		}
 
 		acc := &ProxyAccount{
@@ -1504,15 +1504,24 @@ const dashboardHTML = `<!DOCTYPE html>
               <label class="form-label">Chế Độ Xoay IPv6</label>
               <select id="proxyRotation" class="form-control" onchange="toggleStickyInput()">
                 <option value="request">Xoay Mỗi Request (100% Mới)</option>
-                <option value="sticky">Giữ IP X Giây (Sticky)</option>
-                <option value="static">Cố Định 1 IPv6 (Static)</option>
+                <option value="sticky">Xoay Theo Chu Kỳ Giây (10s, 30s, 60s... [Sticky])</option>
+                <option value="static">Cố Định 1 IPv6 (Static IP)</option>
               </select>
             </div>
           </div>
 
           <div id="stickyGroup" class="form-group" style="display: none;">
-            <label class="form-label">Thời Gian Giữ Nguyên 1 IP (Giây)</label>
-            <input type="number" id="proxyStickySec" class="form-control" placeholder="60" value="60">
+            <div class="form-label">
+              <span>Chu Kỳ Giữ IP Trước Khi Xoay (Giây)</span>
+              <span style="font-size: 11px; color: #38bdf8; font-weight: normal;">VD: 10 = Xoay IP mới mỗi 10 giây</span>
+            </div>
+            <input type="number" id="proxyStickySec" class="form-control" placeholder="10" value="10">
+            <div style="display: flex; gap: 6px; margin-top: 6px; flex-wrap: wrap;">
+              <button type="button" class="btn btn-secondary btn-sm" style="font-size: 11px; padding: 3px 8px;" onclick="setStickyPreset(10)">⚡ 10 giây</button>
+              <button type="button" class="btn btn-secondary btn-sm" style="font-size: 11px; padding: 3px 8px;" onclick="setStickyPreset(30)">⏱️ 30 giây</button>
+              <button type="button" class="btn btn-secondary btn-sm" style="font-size: 11px; padding: 3px 8px;" onclick="setStickyPreset(60)">⏱️ 1 phút (60s)</button>
+              <button type="button" class="btn btn-secondary btn-sm" style="font-size: 11px; padding: 3px 8px;" onclick="setStickyPreset(300)">⏱️ 5 phút</button>
+            </div>
           </div>
 
           <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 14px;">
@@ -1704,6 +1713,10 @@ const dashboardHTML = `<!DOCTYPE html>
       document.getElementById("stickyGroup").style.display = (r === "sticky") ? "flex" : "none";
     }
 
+    function setStickyPreset(sec) {
+      document.getElementById("proxyStickySec").value = sec;
+    }
+
     function genRandomUser() {
       document.getElementById("proxyUser").value = "user" + Math.floor(1000 + Math.random() * 9000);
       updateLivePreview();
@@ -1853,7 +1866,7 @@ const dashboardHTML = `<!DOCTYPE html>
 
         let rotBadge = '<span class="badge badge-indigo">Xoay Mỗi Request</span>';
         if (p.rotation_type === 'sticky') {
-          rotBadge = '<span class="badge badge-neutral" style="color: #38bdf8;">Giữ ' + (p.sticky_sec || 60) + 's</span>';
+          rotBadge = '<span class="badge badge-neutral" style="color: #38bdf8; border-color: rgba(56, 189, 248, 0.3); background: rgba(56, 189, 248, 0.1);">🔄 Xoay mỗi ' + (p.sticky_sec || 10) + 's</span>';
         } else if (p.rotation_type === 'static') {
           rotBadge = '<span class="badge badge-neutral" style="color: #c084fc;">Cố Định 1 IP</span>';
         }
@@ -1943,6 +1956,7 @@ const dashboardHTML = `<!DOCTYPE html>
       document.getElementById("proxyMaxGB").value = "0";
       document.getElementById("proxyExpireDays").value = "30";
       document.getElementById("proxyRotation").value = "request";
+      document.getElementById("proxyStickySec").value = "10";
       toggleStickyInput();
       updateLivePreview();
       openModal("proxyModal");
