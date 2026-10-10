@@ -1,4 +1,4 @@
-package main
+package web
 
 import (
 	"crypto/rand"
@@ -10,11 +10,9 @@ import (
 	"sort"
 	"strings"
 	"time"
-)
 
-// ----------------------------------------------------------------------
-// REST API HANDLERS & BUSINESS LOGIC
-// ----------------------------------------------------------------------
+	"ipv6-gen-linux/internal/store"
+)
 
 func generateRandomString(n int) string {
 	const letters = "abcdefghijklmnopqrstuvwxyz0123456789"
@@ -126,7 +124,6 @@ func (ws *WebServer) handleStats(w http.ResponseWriter, r *http.Request) {
 		uptimeStr = fmt.Sprintf("%dm %ds", mins, secs)
 	}
 
-	// Suggest next free port
 	suggestPort := 10001
 	usedPorts := make(map[int]bool)
 	for _, p := range proxies {
@@ -136,15 +133,13 @@ func (ws *WebServer) handleStats(w http.ResponseWriter, r *http.Request) {
 		suggestPort++
 	}
 
-	// Server Memory & CPU Stats
 	var m runtime.MemStats
 	runtime.ReadMemStats(&m)
 	ramMB := fmt.Sprintf("%.1f MB", float64(m.Alloc)/(1024*1024))
 	goroutines := runtime.NumGoroutine()
 	numCPU := runtime.NumCPU()
 
-	// Top Bandwidth Proxies (Top 5)
-	sortedProxies := make([]*ProxyAccount, len(proxies))
+	sortedProxies := make([]*store.ProxyAccount, len(proxies))
 	copy(sortedProxies, proxies)
 	sort.Slice(sortedProxies, func(i, j int) bool {
 		return sortedProxies[i].BytesUsed > sortedProxies[j].BytesUsed
@@ -167,19 +162,19 @@ func (ws *WebServer) handleStats(w http.ResponseWriter, r *http.Request) {
 	}
 
 	res := map[string]interface{}{
-		"active_proxies":   activeCount,
-		"total_proxies":    len(proxies),
-		"total_bytes":      totalBytes,
-		"uptime":           uptimeStr,
-		"prefix":           ws.prefix,
-		"public_ip":        ws.publicIPv4,
-		"suggest_port":     suggestPort,
-		"ram_usage":        ramMB,
-		"goroutines":       goroutines,
-		"cpu_cores":        numCPU,
-		"rotation_counts":  rotCounts,
-		"top_proxies":      topProxies,
-		"ndp_status":       "Tối Ưu & An Toàn (Active)",
+		"active_proxies":  activeCount,
+		"total_proxies":   len(proxies),
+		"total_bytes":     totalBytes,
+		"uptime":          uptimeStr,
+		"prefix":          ws.prefix,
+		"public_ip":       ws.publicIPv4,
+		"suggest_port":    suggestPort,
+		"ram_usage":       ramMB,
+		"goroutines":      goroutines,
+		"cpu_cores":       numCPU,
+		"rotation_counts": rotCounts,
+		"top_proxies":     topProxies,
+		"ndp_status":      "Tối Ưu & An Toàn (Active)",
 	}
 
 	jsonResponse(w, http.StatusOK, res)
@@ -228,9 +223,9 @@ func (ws *WebServer) handleProxies(w http.ResponseWriter, r *http.Request) {
 			expiresAt = &exp
 		}
 
-		rotType := RotationPolicy(req.RotationType)
-		if rotType != RotationPerRequest && rotType != RotationSticky && rotType != RotationStatic {
-			rotType = RotationSticky
+		rotType := store.RotationPolicy(req.RotationType)
+		if rotType != store.RotationPerRequest && rotType != store.RotationSticky && rotType != store.RotationStatic {
+			rotType = store.RotationSticky
 		}
 
 		stickySec := req.StickySec
@@ -238,7 +233,7 @@ func (ws *WebServer) handleProxies(w http.ResponseWriter, r *http.Request) {
 			stickySec = 10
 		}
 
-		acc := &ProxyAccount{
+		acc := &store.ProxyAccount{
 			ID:           fmt.Sprintf("px-%d", time.Now().UnixNano()),
 			Name:         req.Name,
 			Port:         req.Port,
@@ -311,9 +306,9 @@ func (ws *WebServer) handleProxiesBulk(w http.ResponseWriter, r *http.Request) {
 		req.NamePrefix = "Luồng"
 	}
 
-	rotType := RotationPolicy(req.RotationType)
-	if rotType != RotationPerRequest && rotType != RotationSticky && rotType != RotationStatic {
-		rotType = RotationSticky
+	rotType := store.RotationPolicy(req.RotationType)
+	if rotType != store.RotationPerRequest && rotType != store.RotationSticky && rotType != store.RotationStatic {
+		rotType = store.RotationSticky
 	}
 
 	stickySec := req.StickySec
@@ -332,7 +327,6 @@ func (ws *WebServer) handleProxiesBulk(w http.ResponseWriter, r *http.Request) {
 		expiresAt = &exp
 	}
 
-	// Kiểm tra xem có cổng nào bị trùng không
 	for p := req.StartPort; p < req.StartPort+req.Count; p++ {
 		if existing := ws.store.GetByPort(p); existing != nil {
 			jsonResponse(w, http.StatusBadRequest, map[string]string{
@@ -342,18 +336,19 @@ func (ws *WebServer) handleProxiesBulk(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	createdList := make([]*ProxyAccount, 0, req.Count)
+	createdList := make([]*store.ProxyAccount, 0, req.Count)
 
 	for i := 0; i < req.Count; i++ {
 		port := req.StartPort + i
 		uname := req.Username
 		pass := req.Password
+
 		if req.AutoUserPass {
 			uname = fmt.Sprintf("user_%d", port)
 			pass = generateRandomString(8)
 		}
 
-		acc := &ProxyAccount{
+		acc := &store.ProxyAccount{
 			ID:           fmt.Sprintf("px-%d-%d", time.Now().UnixNano(), port),
 			Name:         fmt.Sprintf("%s #%d (Port %d)", req.NamePrefix, i+1, port),
 			Port:         port,
@@ -470,7 +465,7 @@ func (ws *WebServer) handleProxyItem(w http.ResponseWriter, r *http.Request) {
 		}
 
 		if req.RotationType != "" {
-			acc.RotationType = RotationPolicy(req.RotationType)
+			acc.RotationType = store.RotationPolicy(req.RotationType)
 		}
 		if req.StickySec > 0 {
 			acc.StickySec = req.StickySec
@@ -479,7 +474,6 @@ func (ws *WebServer) handleProxyItem(w http.ResponseWriter, r *http.Request) {
 			acc.Enabled = *req.Enabled
 		}
 
-		// Handle port update if changed
 		if req.Port > 0 && req.Port != acc.Port {
 			if req.Port < 1024 || req.Port > 65535 {
 				jsonResponse(w, http.StatusBadRequest, map[string]string{"error": "Cổng phải nằm trong khoảng 1024 - 65535"})
@@ -513,7 +507,7 @@ func (ws *WebServer) handleProxyItem(w http.ResponseWriter, r *http.Request) {
 }
 
 func (ws *WebServer) handleExport(w http.ResponseWriter, r *http.Request) {
-	format := r.URL.Query().Get("format") // "ip_port_user_pass" | "json"
+	format := r.URL.Query().Get("format")
 	proxies := ws.store.GetAll()
 
 	if format == "json" {

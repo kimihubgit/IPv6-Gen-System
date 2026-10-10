@@ -1,14 +1,19 @@
-package main
+package web
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"log"
 	"net/http"
+	"os"
 	"sync"
 	"time"
+
+	"ipv6-gen-linux/internal/engine"
+	"ipv6-gen-linux/internal/store"
 )
 
 // WebServer manages the Web Admin Dashboard and REST APIs
@@ -16,17 +21,18 @@ type WebServer struct {
 	port       int
 	prefix     string
 	publicIPv4 string
-	manager    *MultiProxyManager
-	store      *ProxyStore
+	manager    *engine.MultiProxyManager
+	store      *store.ProxyStore
 	adminUser  string
 	adminPass  string
 	sessions   map[string]time.Time
 	mu         sync.RWMutex
 	startTime  time.Time
+	httpServer *http.Server
 }
 
 // NewWebServer creates a new Web Dashboard server
-func NewWebServer(port int, prefix string, publicIPv4 string, manager *MultiProxyManager, store *ProxyStore) *WebServer {
+func NewWebServer(port int, prefix string, publicIPv4 string, manager *engine.MultiProxyManager, store *store.ProxyStore) *WebServer {
 	if port <= 0 {
 		port = 9090
 	}
@@ -37,7 +43,7 @@ func NewWebServer(port int, prefix string, publicIPv4 string, manager *MultiProx
 		manager:    manager,
 		store:      store,
 		adminUser:  "admin",
-		adminPass:  "admin123", // Mật khẩu mặc định
+		adminPass:  "admin123",
 		sessions:   make(map[string]time.Time),
 		startTime:  time.Now(),
 	}
@@ -58,22 +64,34 @@ func (ws *WebServer) Start() error {
 	mux.HandleFunc("/api/settings", ws.authMiddleware(ws.handleSettings))
 
 	// Static Theme & UI routes
-	webFS := getFileSystem()
-	fileServer := http.FileServer(webFS)
-	mux.Handle("/", fileServer)
+	webDir := "web"
+	if fi, err := os.Stat(webDir); err == nil && fi.IsDir() {
+		log.Println("📁 Đang phục vụ theme/giao diện trực tiếp từ thư mục đĩa: ./web")
+		mux.Handle("/", http.FileServer(http.Dir(webDir)))
+	} else {
+		log.Println("⚠️ Thư mục ./web không tồn tại trên đĩa")
+	}
 
 	addr := fmt.Sprintf("0.0.0.0:%d", ws.port)
 	log.Printf("🚀 Web Dashboard đã sẵn sàng tại: http://%s:%d (Đăng nhập: %s / %s)",
 		ws.publicIPv4, ws.port, ws.adminUser, ws.adminPass)
 
-	server := &http.Server{
+	ws.httpServer = &http.Server{
 		Addr:         addr,
 		Handler:      mux,
 		ReadTimeout:  15 * time.Second,
 		WriteTimeout: 15 * time.Second,
 	}
 
-	return server.ListenAndServe()
+	return ws.httpServer.ListenAndServe()
+}
+
+// Stop terminates the Web Dashboard gracefully
+func (ws *WebServer) Stop(ctx context.Context) error {
+	if ws.httpServer != nil {
+		return ws.httpServer.Shutdown(ctx)
+	}
+	return nil
 }
 
 // Session helpers
