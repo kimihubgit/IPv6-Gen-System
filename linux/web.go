@@ -56,6 +56,7 @@ func (ws *WebServer) Start() error {
 	mux.HandleFunc("/api/logout", ws.handleLogout)
 	mux.HandleFunc("/api/stats", ws.authMiddleware(ws.handleStats))
 	mux.HandleFunc("/api/proxies", ws.authMiddleware(ws.handleProxies))
+	mux.HandleFunc("/api/proxies/bulk", ws.authMiddleware(ws.handleProxiesBulk))
 	mux.HandleFunc("/api/proxies/", ws.authMiddleware(ws.handleProxyItem))
 	mux.HandleFunc("/api/export", ws.authMiddleware(ws.handleExport))
 	mux.HandleFunc("/api/settings", ws.authMiddleware(ws.handleSettings))
@@ -319,6 +320,135 @@ func (ws *WebServer) handleProxies(w http.ResponseWriter, r *http.Request) {
 	default:
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 	}
+}
+
+func generateRandomString(n int) string {
+	const letters = "abcdefghijklmnopqrstuvwxyz0123456789"
+	b := make([]byte, n)
+	_, _ = rand.Read(b)
+	for i := range b {
+		b[i] = letters[int(b[i])%len(letters)]
+	}
+	return string(b)
+}
+
+func (ws *WebServer) handleProxiesBulk(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var req struct {
+		StartPort    int     `json:"start_port"`
+		Count        int     `json:"count"`
+		NamePrefix   string  `json:"name_prefix"`
+		Username     string  `json:"username"`
+		Password     string  `json:"password"`
+		MaxGB        float64 `json:"max_gb"`
+		ExpireDays   int     `json:"expire_days"`
+		RotationType string  `json:"rotation_type"`
+		StickySec    int     `json:"sticky_sec"`
+		AutoUserPass bool    `json:"auto_user_pass"`
+	}
+
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		jsonResponse(w, http.StatusBadRequest, map[string]string{"error": "Dữ liệu JSON không hợp lệ"})
+		return
+	}
+
+	if req.Count <= 0 || req.Count > 500 {
+		jsonResponse(w, http.StatusBadRequest, map[string]string{"error": "Số lượng cổng phải từ 1 đến 500"})
+		return
+	}
+
+	if req.StartPort < 1024 || req.StartPort+req.Count-1 > 65535 {
+		jsonResponse(w, http.StatusBadRequest, map[string]string{"error": "Dải cổng không hợp lệ (1024 - 65535)"})
+		return
+	}
+
+	if req.NamePrefix == "" {
+		req.NamePrefix = "Luồng"
+	}
+
+	rotType := RotationPolicy(req.RotationType)
+	if rotType != RotationPerRequest && rotType != RotationSticky && rotType != RotationStatic {
+		rotType = RotationSticky
+	}
+
+	stickySec := req.StickySec
+	if stickySec <= 0 {
+		stickySec = 10
+	}
+
+	var maxBytes int64 = 0
+	if req.MaxGB > 0 {
+		maxBytes = int64(req.MaxGB * 1024 * 1024 * 1024)
+	}
+
+	var expiresAt *time.Time
+	if req.ExpireDays > 0 {
+		exp := time.Now().AddDate(0, 0, req.ExpireDays)
+		expiresAt = &exp
+	}
+
+	// Kiểm tra xem có cổng nào bị trùng không
+	for p := req.StartPort; p < req.StartPort+req.Count; p++ {
+		if existing := ws.store.GetByPort(p); existing != nil {
+			jsonResponse(w, http.StatusBadRequest, map[string]string{
+				"error": fmt.Sprintf("Cổng %d đã được dùng bởi proxy '%s'!", p, existing.Name),
+			})
+			return
+		}
+	}
+
+	createdList := make([]*ProxyAccount, 0, req.Count)
+
+	for i := 0; i < req.Count; i++ {
+		port := req.StartPort + i
+		uname := req.Username
+		pass := req.Password
+		if req.AutoUserPass {
+			uname = fmt.Sprintf("user_%d", port)
+			pass = generateRandomString(8)
+		}
+
+		acc := &ProxyAccount{
+			ID:           fmt.Sprintf("px-%d-%d", time.Now().UnixNano(), port),
+			Name:         fmt.Sprintf("%s #%d (Port %d)", req.NamePrefix, i+1, port),
+			Port:         port,
+			Username:     uname,
+			Password:     pass,
+			Proto:        "both",
+			MaxBytes:     maxBytes,
+			BytesUsed:    0,
+			ExpiresAt:    expiresAt,
+			RotationType: rotType,
+			StickySec:    stickySec,
+			Enabled:      true,
+			CreatedAt:    time.Now(),
+		}
+
+		if err := ws.store.Add(acc); err != nil {
+			log.Printf("Lỗi thêm proxy port %d: %v", port, err)
+			continue
+		}
+
+		if err := ws.manager.SyncAccount(acc); err != nil {
+			log.Printf("Lỗi kích hoạt port %d: %v", port, err)
+			_ = ws.store.Delete(acc.ID)
+			continue
+		}
+
+		createdList = append(createdList, acc)
+	}
+
+	_ = ws.store.Save()
+	jsonResponse(w, http.StatusCreated, map[string]interface{}{
+		"status":  "ok",
+		"message": fmt.Sprintf("Đã tạo thành công %d cổng proxy!", len(createdList)),
+		"count":   len(createdList),
+		"proxies": createdList,
+	})
 }
 
 func (ws *WebServer) handleProxyItem(w http.ResponseWriter, r *http.Request) {
@@ -1441,9 +1571,13 @@ const dashboardHTML = `<!DOCTYPE html>
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
           Làm Mới
         </button>
+        <button class="btn btn-secondary" style="border-color: rgba(6, 182, 212, 0.4); color: #38bdf8;" onclick="openBulkModal()">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" style="width: 15px; height: 15px;"><rect width="7" height="7" x="3" y="3" rx="1"/><rect width="7" height="7" x="14" y="3" rx="1"/><rect width="7" height="7" x="3" y="14" rx="1"/><rect width="7" height="7" x="14" y="14" rx="1"/></svg>
+          ⚡ Tạo Hàng Loạt (Bulk)
+        </button>
         <button class="btn btn-primary" onclick="openCreateModal()">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><line x1="12" x2="12" y1="5" y2="19"/><line x1="5" x2="19" y1="12" y2="12"/></svg>
-          Tạo Proxy Mới
+          Tạo 1 Proxy
         </button>
       </div>
     </div>
@@ -1504,7 +1638,7 @@ const dashboardHTML = `<!DOCTYPE html>
               <label class="form-label">Chế Độ Xoay IPv6</label>
               <select id="proxyRotation" class="form-control" onchange="toggleStickyInput()">
                 <option value="request">Xoay Mỗi Request (100% Mới)</option>
-                <option value="sticky">Xoay Theo Chu Kỳ Giây (10s, 30s, 60s... [Sticky])</option>
+                <option value="sticky">Xoay Theo Chu Kỳ Giây (Tự Đổi IP Mới Sau X Giây)</option>
                 <option value="static">Cố Định 1 IPv6 (Static IP)</option>
               </select>
             </div>
@@ -1513,14 +1647,18 @@ const dashboardHTML = `<!DOCTYPE html>
           <div id="stickyGroup" class="form-group" style="display: none;">
             <div class="form-label">
               <span>Chu Kỳ Giữ IP Trước Khi Xoay (Giây)</span>
-              <span style="font-size: 11px; color: #38bdf8; font-weight: normal;">VD: 10 = Xoay IP mới mỗi 10 giây</span>
+              <span style="font-size: 11px; color: #38bdf8; font-weight: normal;">Tùy chỉnh số giây bất kỳ (5s, 10s, 30s...)</span>
             </div>
-            <input type="number" id="proxyStickySec" class="form-control" placeholder="10" value="10">
+            <input type="number" id="proxyStickySec" class="form-control" placeholder="10" value="10" min="1">
             <div style="display: flex; gap: 6px; margin-top: 6px; flex-wrap: wrap;">
+              <button type="button" class="btn btn-secondary btn-sm" style="font-size: 11px; padding: 3px 8px;" onclick="setStickyPreset(5)">⚡ 5 giây</button>
               <button type="button" class="btn btn-secondary btn-sm" style="font-size: 11px; padding: 3px 8px;" onclick="setStickyPreset(10)">⚡ 10 giây</button>
               <button type="button" class="btn btn-secondary btn-sm" style="font-size: 11px; padding: 3px 8px;" onclick="setStickyPreset(30)">⏱️ 30 giây</button>
               <button type="button" class="btn btn-secondary btn-sm" style="font-size: 11px; padding: 3px 8px;" onclick="setStickyPreset(60)">⏱️ 1 phút (60s)</button>
               <button type="button" class="btn btn-secondary btn-sm" style="font-size: 11px; padding: 3px 8px;" onclick="setStickyPreset(300)">⏱️ 5 phút</button>
+            </div>
+            <div style="font-size: 11.5px; color: #94a3b8; margin-top: 4px; line-height: 1.4;">
+              💡 <b>Cơ chế Đa Luồng (Cách 1):</b> Khi cắm nhiều luồng (50 luồng) vào 1 cổng này, proxy tự động phát IPv6 riêng biệt cho từng luồng/connection và tự xoay sau số giây bạn đặt.
             </div>
           </div>
 
@@ -1564,6 +1702,91 @@ const dashboardHTML = `<!DOCTYPE html>
         <div class="modal-footer">
           <button type="button" class="btn btn-secondary" onclick="closeModal('proxyModal')">Đóng</button>
           <button type="submit" class="btn btn-primary" id="btnSubmitProxy">Lưu Cấu Hình</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- BULK CREATE MODAL (CÁCH 2: TẠO HÀNG LOẠT CỔNG) -->
+  <div id="bulkModal" class="modal-backdrop">
+    <div class="modal-box" style="max-width: 580px;">
+      <div class="modal-header">
+        <h3>⚡ Tạo Hàng Loạt Cổng Proxy (Đa Cổng)</h3>
+        <button class="btn btn-secondary btn-icon-only" onclick="closeModal('bulkModal')">
+          <svg style="width: 14px; height: 14px;" viewBox="0 0 24 24" fill="none" stroke="currentColor"><line x1="18" x2="6" y1="6" y2="18"/><line x1="6" x2="18" y1="6" y2="18"/></svg>
+        </button>
+      </div>
+      <form id="bulkForm" onsubmit="saveBulkProxies(event)">
+        <div class="modal-body">
+          <p style="font-size: 12.5px; color: #cbd5e1; background: rgba(99, 102, 241, 0.12); border: 1px solid rgba(99, 102, 241, 0.3); padding: 10px 14px; border-radius: var(--radius-md); line-height: 1.45;">
+            💡 <b>Cơ chế Đa Cổng (Cách 2):</b> Tạo một dải cổng (ví dụ: 50 cổng từ 10001 - 10050). Mỗi luồng trong tool cắm 1 port riêng, có IPv6 riêng biệt, tự xoay sau số giây bạn đặt.
+          </p>
+
+          <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 14px;">
+            <div class="form-group">
+              <label class="form-label">Cổng Bắt Đầu</label>
+              <input type="number" id="bulkStartPort" class="form-control" required placeholder="10001" value="10001">
+            </div>
+            <div class="form-group">
+              <label class="form-label">Số Lượng Cổng Cần Tạo</label>
+              <input type="number" id="bulkCount" class="form-control" required min="1" max="500" placeholder="50" value="50">
+            </div>
+          </div>
+
+          <div class="form-group">
+            <label class="form-label">Tiền Tố Tên Ghi Chú</label>
+            <input type="text" id="bulkNamePrefix" class="form-control" placeholder="Luồng Nuôi Nick" value="Luồng Nuôi Nick">
+          </div>
+
+          <div class="form-group">
+            <label class="form-label">Chế Độ Xoay IPv6 Cho Từng Cổng</label>
+            <select id="bulkRotation" class="form-control" onchange="toggleBulkStickyInput()">
+              <option value="sticky" selected>Xoay Theo Chu Kỳ Giây (Tự Đổi IP Mới Sau X Giây)</option>
+              <option value="request">Xoay Mỗi Request (100% Mới)</option>
+              <option value="static">Cố Định 1 IPv6 (Static IP)</option>
+            </select>
+          </div>
+
+          <div id="bulkStickyGroup" class="form-group">
+            <div class="form-label">
+              <span>Chu Kỳ Xoay IP Mới (Giây)</span>
+              <span style="font-size: 11px; color: #38bdf8; font-weight: normal;">Tùy chỉnh số giây bất kỳ (5s, 10s, 30s...)</span>
+            </div>
+            <input type="number" id="bulkStickySec" class="form-control" placeholder="10" value="10" min="1">
+            <div style="display: flex; gap: 6px; margin-top: 6px; flex-wrap: wrap;">
+              <button type="button" class="btn btn-secondary btn-sm" style="font-size: 11px; padding: 3px 8px;" onclick="setBulkStickyPreset(5)">⚡ 5 giây</button>
+              <button type="button" class="btn btn-secondary btn-sm" style="font-size: 11px; padding: 3px 8px;" onclick="setBulkStickyPreset(10)">⚡ 10 giây</button>
+              <button type="button" class="btn btn-secondary btn-sm" style="font-size: 11px; padding: 3px 8px;" onclick="setBulkStickyPreset(30)">⏱️ 30 giây</button>
+              <button type="button" class="btn btn-secondary btn-sm" style="font-size: 11px; padding: 3px 8px;" onclick="setBulkStickyPreset(60)">⏱️ 1 phút (60s)</button>
+              <button type="button" class="btn btn-secondary btn-sm" style="font-size: 11px; padding: 3px 8px;" onclick="setBulkStickyPreset(300)">⏱️ 5 phút</button>
+            </div>
+          </div>
+
+          <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 14px;">
+            <div class="form-group">
+              <label class="form-label">Tài Khoản (Để trống nếu không cần)</label>
+              <input type="text" id="bulkUser" class="form-control" placeholder="Để trống nếu không cần">
+            </div>
+            <div class="form-group">
+              <label class="form-label">Mật Khẩu (Để trống nếu không cần)</label>
+              <input type="text" id="bulkPass" class="form-control" placeholder="Để trống nếu không cần">
+            </div>
+          </div>
+
+          <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 14px;">
+            <div class="form-group">
+              <label class="form-label">Hạn Mức GB Mỗi Cổng</label>
+              <input type="number" step="0.5" id="bulkMaxGB" class="form-control" placeholder="0 = Không giới hạn" value="0">
+            </div>
+            <div class="form-group">
+              <label class="form-label">Thời Hạn Sử Dụng (Ngày)</label>
+              <input type="number" id="bulkExpireDays" class="form-control" placeholder="0 = Vĩnh viễn" value="30">
+            </div>
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button type="button" class="btn btn-secondary" onclick="closeModal('bulkModal')">Đóng</button>
+          <button type="submit" class="btn btn-primary" id="btnSubmitBulk">⚡ Tạo Tất Cả Cổng</button>
         </div>
       </form>
     </div>
@@ -1982,7 +2205,7 @@ const dashboardHTML = `<!DOCTYPE html>
       }
       document.getElementById("proxyExpireDays").value = expDays;
       document.getElementById("proxyRotation").value = p.rotation_type || "request";
-      document.getElementById("proxyStickySec").value = p.sticky_sec || 60;
+      document.getElementById("proxyStickySec").value = p.sticky_sec || 10;
 
       toggleStickyInput();
       updateLivePreview();
@@ -2000,7 +2223,7 @@ const dashboardHTML = `<!DOCTYPE html>
         max_gb: parseFloat(document.getElementById("proxyMaxGB").value) || 0,
         expire_days: parseInt(document.getElementById("proxyExpireDays").value) || 0,
         rotation_type: document.getElementById("proxyRotation").value,
-        sticky_sec: parseInt(document.getElementById("proxyStickySec").value) || 60
+        sticky_sec: parseInt(document.getElementById("proxyStickySec").value) || 10
       };
 
       const url = id ? ("/api/proxies/" + id) : "/api/proxies";
@@ -2018,6 +2241,69 @@ const dashboardHTML = `<!DOCTYPE html>
         loadData();
       } else {
         showToast(data.error || "Có lỗi xảy ra", "error");
+      }
+    }
+
+    function openBulkModal() {
+      let nextPort = 10001;
+      if (globalProxies && globalProxies.length > 0) {
+        let maxP = 0;
+        globalProxies.forEach(p => { if (p.port > maxP) maxP = p.port; });
+        if (maxP >= 10000 && maxP < 65000) nextPort = maxP + 1;
+      }
+      document.getElementById("bulkStartPort").value = nextPort;
+      document.getElementById("bulkCount").value = "50";
+      document.getElementById("bulkStickySec").value = "10";
+      toggleBulkStickyInput();
+      openModal("bulkModal");
+    }
+
+    function toggleBulkStickyInput() {
+      const r = document.getElementById("bulkRotation").value;
+      document.getElementById("bulkStickyGroup").style.display = (r === "sticky") ? "flex" : "none";
+    }
+
+    function setBulkStickyPreset(sec) {
+      document.getElementById("bulkStickySec").value = sec;
+    }
+
+    async function saveBulkProxies(e) {
+      e.preventDefault();
+      const btn = document.getElementById("btnSubmitBulk");
+      btn.disabled = true;
+      btn.innerText = "Đang tạo...";
+
+      const payload = {
+        start_port: parseInt(document.getElementById("bulkStartPort").value) || 10001,
+        count: parseInt(document.getElementById("bulkCount").value) || 1,
+        name_prefix: document.getElementById("bulkNamePrefix").value || "Luồng Nuôi Nick",
+        username: document.getElementById("bulkUser").value,
+        password: document.getElementById("bulkPass").value,
+        max_gb: parseFloat(document.getElementById("bulkMaxGB").value) || 0,
+        expire_days: parseInt(document.getElementById("bulkExpireDays").value) || 0,
+        rotation_type: document.getElementById("bulkRotation").value,
+        sticky_sec: parseInt(document.getElementById("bulkStickySec").value) || 10
+      };
+
+      try {
+        const res = await fetch("/api/proxies/bulk", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload)
+        });
+        const data = await res.json();
+        if (res.ok) {
+          showToast("Đã tạo thành công " + data.count + " cổng proxy!");
+          closeModal("bulkModal");
+          loadData();
+        } else {
+          showToast(data.error || "Có lỗi xảy ra", "error");
+        }
+      } catch (err) {
+        showToast("Lỗi kết nối: " + err.message, "error");
+      } finally {
+        btn.disabled = false;
+        btn.innerText = "⚡ Tạo Tất Cả Cổng";
       }
     }
 

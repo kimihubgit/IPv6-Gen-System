@@ -37,13 +37,21 @@ func (c *CountingConn) Write(b []byte) (n int, err error) {
 	return n, err
 }
 
+// SessionIPEntry tracks the rotated IPv6 assigned to a specific connection/session
+type SessionIPEntry struct {
+	ip        net.IP
+	expiresAt time.Time
+}
+
 // PortListener manages a TCP listener on a dedicated port for a ProxyAccount
 type PortListener struct {
-	account  *ProxyAccount
-	listener net.Listener
-	ipNet    *net.IPNet
-	store    *ProxyStore
-	stopChan chan struct{}
+	account    *ProxyAccount
+	listener   net.Listener
+	ipNet      *net.IPNet
+	store      *ProxyStore
+	stopChan   chan struct{}
+	sessions   map[string]*SessionIPEntry
+	sessionsMu sync.RWMutex
 }
 
 // MultiProxyManager manages dynamic port listeners for all proxy accounts
@@ -123,6 +131,7 @@ func (m *MultiProxyManager) RemoveAccount(port int) {
 	defer m.mu.Unlock()
 
 	if pl, exists := m.listeners[port]; exists {
+		close(pl.stopChan)
 		_ = pl.listener.Close()
 		delete(m.listeners, port)
 	}
@@ -141,12 +150,33 @@ func (m *MultiProxyManager) startListenerLocked(acc *ProxyAccount) error {
 		ipNet:    m.ipNet,
 		store:    m.store,
 		stopChan: make(chan struct{}),
+		sessions: make(map[string]*SessionIPEntry),
 	}
 	m.listeners[acc.Port] = pl
 
 	go pl.serve()
+	go pl.cleanupLoop()
 	log.Printf("✅ Đã kích hoạt proxy [%s] lắng nghe cổng %d (HTTP + SOCKS5)", acc.Name, acc.Port)
 	return nil
+}
+
+func (pl *PortListener) cleanupLoop() {
+	ticker := time.NewTicker(20 * time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-pl.stopChan:
+			return
+		case now := <-ticker.C:
+			pl.sessionsMu.Lock()
+			for k, v := range pl.sessions {
+				if now.After(v.expiresAt) {
+					delete(pl.sessions, k)
+				}
+			}
+			pl.sessionsMu.Unlock()
+		}
+	}
 }
 
 func (m *MultiProxyManager) backgroundLoop() {
@@ -226,8 +256,8 @@ func (pl *PortListener) handleConn(rawConn net.Conn) {
 	}
 }
 
-// PickIPv6 picks the outbound IPv6 according to account's rotation policy
-func (pl *PortListener) PickIPv6() net.IP {
+// PickIPv6 picks the outbound IPv6 according to account's rotation policy and session key
+func (pl *PortListener) PickIPv6(sessionKey string) net.IP {
 	acc := pl.account
 
 	switch acc.RotationType {
@@ -243,6 +273,27 @@ func (pl *PortListener) PickIPv6() net.IP {
 		return newIP
 
 	case RotationSticky:
+		sec := acc.StickySec
+		if sec <= 0 {
+			sec = 10
+		}
+
+		// Nếu có sessionKey (đại diện cho luồng / client / connection): cấp IP riêng cho session đó
+		if sessionKey != "" {
+			pl.sessionsMu.Lock()
+			defer pl.sessionsMu.Unlock()
+			if entry, ok := pl.sessions[sessionKey]; ok && time.Now().Before(entry.expiresAt) {
+				return entry.ip
+			}
+			newIP := GenerateSingleRandomIPv6(pl.ipNet)
+			pl.sessions[sessionKey] = &SessionIPEntry{
+				ip:        newIP,
+				expiresAt: time.Now().Add(time.Duration(sec) * time.Second),
+			}
+			return newIP
+		}
+
+		// Fallback nếu không có sessionKey (dùng account sticky)
 		acc.mu.Lock()
 		defer acc.mu.Unlock()
 		if acc.currentStickyIP != "" && time.Now().Before(acc.stickyExpireAt) {
@@ -252,10 +303,6 @@ func (pl *PortListener) PickIPv6() net.IP {
 		}
 		newIP := GenerateSingleRandomIPv6(pl.ipNet)
 		acc.currentStickyIP = newIP.String()
-		sec := acc.StickySec
-		if sec <= 0 {
-			sec = 10
-		}
 		acc.stickyExpireAt = time.Now().Add(time.Duration(sec) * time.Second)
 		return newIP
 
@@ -266,8 +313,8 @@ func (pl *PortListener) PickIPv6() net.IP {
 	}
 }
 
-// dialTarget connects outbound binding to the chosen IPv6
-func (pl *PortListener) dialTarget(target string) (net.Conn, net.IP, error) {
+// dialTarget connects outbound binding to the chosen IPv6 for this session
+func (pl *PortListener) dialTarget(target string, sessionKey string) (net.Conn, net.IP, error) {
 	host, port, err := net.SplitHostPort(target)
 	if err != nil {
 		host = target
@@ -294,7 +341,7 @@ func (pl *PortListener) dialTarget(target string) (net.Conn, net.IP, error) {
 	// 1. Nếu đích đến hỗ trợ IPv6, bắt buộc dùng IPv6 xoay và thử tối đa 2 IP khác nhau
 	if hasIPv6 {
 		for attempt := 0; attempt < 2; attempt++ {
-			outIP := pl.PickIPv6()
+			outIP := pl.PickIPv6(sessionKey)
 			if outIP == nil {
 				break
 			}
@@ -327,32 +374,46 @@ func (pl *PortListener) dialTarget(target string) (net.Conn, net.IP, error) {
 // HTTP / HTTPS CONNECT HANDLER
 // ----------------------------------------------------------------------
 
-func (pl *PortListener) verifyHTTPAuth(r *http.Request) bool {
+func (pl *PortListener) verifyHTTPAuth(r *http.Request, conn *CountingConn) (bool, string) {
 	if pl.account.Username == "" && pl.account.Password == "" {
-		return true // Không yêu cầu auth
+		return true, "" // Không yêu cầu auth -> Dùng port-level sticky
 	}
 
 	authHeader := r.Header.Get("Proxy-Authorization")
 	if authHeader == "" {
-		return false
+		return false, ""
 	}
 
 	parts := strings.SplitN(authHeader, " ", 2)
 	if len(parts) != 2 || !strings.EqualFold(parts[0], "Basic") {
-		return false
+		return false, ""
 	}
 
 	payload, err := base64.StdEncoding.DecodeString(parts[1])
 	if err != nil {
-		return false
+		return false, ""
 	}
 
 	pair := strings.SplitN(string(payload), ":", 2)
 	if len(pair) != 2 {
-		return false
+		return false, ""
 	}
 
-	return pair[0] == pl.account.Username && pair[1] == pl.account.Password
+	clientUser, clientPass := pair[0], pair[1]
+	if clientPass != pl.account.Password {
+		return false, ""
+	}
+
+	if clientUser == pl.account.Username {
+		return true, "" // Base user -> Dùng port-level sticky
+	}
+
+	// Hỗ trợ session tag trong username cho Cách 1 (ví dụ "user-session-1" hoặc "user_sess_1")
+	if strings.HasPrefix(clientUser, pl.account.Username+"-") || strings.HasPrefix(clientUser, pl.account.Username+"_") {
+		return true, clientUser // Cấp IP riêng cho từng session
+	}
+
+	return false, ""
 }
 
 func (pl *PortListener) handleHTTP(conn *CountingConn, reader *bufio.Reader) {
@@ -361,17 +422,18 @@ func (pl *PortListener) handleHTTP(conn *CountingConn, reader *bufio.Reader) {
 		return
 	}
 
-	// Check HTTP Proxy Authentication
-	if !pl.verifyHTTPAuth(req) {
+	// Check HTTP Proxy Authentication & lấy sessionKey
+	valid, sessKey := pl.verifyHTTPAuth(req, conn)
+	if !valid {
 		resp := "HTTP/1.1 407 Proxy Authentication Required\r\nProxy-Authenticate: Basic realm=\"IPv6 Rotating Proxy\"\r\nContent-Length: 0\r\n\r\n"
 		_, _ = conn.Write([]byte(resp))
 		return
 	}
 
 	if req.Method == http.MethodConnect {
-		pl.handleHTTPSConnect(conn, req)
+		pl.handleHTTPSConnect(conn, req, sessKey)
 	} else {
-		pl.handlePlainHTTP(conn, req)
+		pl.handlePlainHTTP(conn, req, sessKey)
 	}
 }
 
@@ -406,8 +468,8 @@ func relayBidirectional(conn1, conn2 net.Conn) {
 	wg.Wait()
 }
 
-func (pl *PortListener) handleHTTPSConnect(clientConn *CountingConn, req *http.Request) {
-	destConn, outIP, err := pl.dialTarget(req.Host)
+func (pl *PortListener) handleHTTPSConnect(clientConn *CountingConn, req *http.Request, sessKey string) {
+	destConn, outIP, err := pl.dialTarget(req.Host, sessKey)
 	if err != nil {
 		resp := fmt.Sprintf("HTTP/1.1 503 Service Unavailable\r\n\r\n%s", err.Error())
 		_, _ = clientConn.Write([]byte(resp))
@@ -437,7 +499,7 @@ func (pl *PortListener) handleHTTPSConnect(clientConn *CountingConn, req *http.R
 	relayBidirectional(clientConn, destCounting)
 }
 
-func (pl *PortListener) handlePlainHTTP(clientConn *CountingConn, req *http.Request) {
+func (pl *PortListener) handlePlainHTTP(clientConn *CountingConn, req *http.Request, sessKey string) {
 	destHost := req.URL.Host
 	if !strings.Contains(destHost, ":") {
 		if req.URL.Scheme == "https" {
@@ -449,7 +511,7 @@ func (pl *PortListener) handlePlainHTTP(clientConn *CountingConn, req *http.Requ
 
 	transport := &http.Transport{
 		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
-			conn, outIP, err := pl.dialTarget(addr)
+			conn, outIP, err := pl.dialTarget(addr, sessKey)
 			if outIP != nil {
 				log.Printf("[Port %d][%s] HTTP %s -> Outbound IPv6: %s", pl.account.Port, pl.account.Name, req.URL.Host, outIP.String())
 			} else if err == nil {
@@ -517,6 +579,7 @@ func (pl *PortListener) handleSOCKS5(clientConn *CountingConn, reader *bufio.Rea
 
 	// Determine authentication method
 	needAuth := pl.account.Username != "" || pl.account.Password != ""
+	sessKey := clientConn.RemoteAddr().String()
 
 	if needAuth {
 		if !hasUserPass {
@@ -552,7 +615,19 @@ func (pl *PortListener) handleSOCKS5(clientConn *CountingConn, reader *bufio.Rea
 			return
 		}
 
-		if string(uname) != pl.account.Username || string(passwd) != pl.account.Password {
+		clientUname := string(uname)
+		clientPass := string(passwd)
+
+		if clientPass != pl.account.Password {
+			_, _ = clientConn.Write([]byte{0x01, 0x01})
+			return
+		}
+
+		if clientUname == pl.account.Username {
+			sessKey = ""
+		} else if strings.HasPrefix(clientUname, pl.account.Username+"-") || strings.HasPrefix(clientUname, pl.account.Username+"_") {
+			sessKey = clientUname
+		} else {
 			// Auth failed: 0x01 (version), 0x01 (failure status)
 			_, _ = clientConn.Write([]byte{0x01, 0x01})
 			return
@@ -560,6 +635,7 @@ func (pl *PortListener) handleSOCKS5(clientConn *CountingConn, reader *bufio.Rea
 		// Auth success: 0x01 (version), 0x00 (success status)
 		_, _ = clientConn.Write([]byte{0x01, 0x00})
 	} else {
+		sessKey = ""
 		if !hasNoAuth {
 			_, _ = clientConn.Write([]byte{0x05, 0xFF})
 			return
@@ -617,7 +693,7 @@ func (pl *PortListener) handleSOCKS5(clientConn *CountingConn, reader *bufio.Rea
 	targetAddr := fmt.Sprintf("%s:%d", targetHost, targetPort)
 
 	// Dial target via outbound rotated IPv6
-	destConn, outIP, err := pl.dialTarget(targetAddr)
+	destConn, outIP, err := pl.dialTarget(targetAddr, sessKey)
 	if err != nil {
 		_, _ = clientConn.Write([]byte{0x05, 0x05, 0x00, 0x01, 0, 0, 0, 0, 0, 0}) // Connection refused
 		return
