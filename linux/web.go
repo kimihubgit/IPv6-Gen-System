@@ -47,9 +47,6 @@ func NewWebServer(port int, prefix string, publicIPv4 string, manager *MultiProx
 func (ws *WebServer) Start() error {
 	mux := http.NewServeMux()
 
-	// Static & App routes
-	mux.HandleFunc("/", ws.handleIndex)
-
 	// API routes
 	mux.HandleFunc("/api/login", ws.handleLogin)
 	mux.HandleFunc("/api/logout", ws.handleLogout)
@@ -59,6 +56,11 @@ func (ws *WebServer) Start() error {
 	mux.HandleFunc("/api/proxies/", ws.authMiddleware(ws.handleProxyItem))
 	mux.HandleFunc("/api/export", ws.authMiddleware(ws.handleExport))
 	mux.HandleFunc("/api/settings", ws.authMiddleware(ws.handleSettings))
+
+	// Static Theme & UI routes
+	webFS := getFileSystem()
+	fileServer := http.FileServer(webFS)
+	mux.Handle("/", fileServer)
 
 	addr := fmt.Sprintf("0.0.0.0:%d", ws.port)
 	log.Printf("🚀 Web Dashboard đã sẵn sàng tại: http://%s:%d (Đăng nhập: %s / %s)",

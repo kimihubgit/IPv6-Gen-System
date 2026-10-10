@@ -1,0 +1,677 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>IPv6 Proxy Hub - Cloud Enterprise Manager</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/css/style.css">
+</head>
+<body>
+  <div class="ambient-glow"></div>
+
+  <!-- ============================================================ -->
+  <!-- SIDEBAR (MENU TRÁI)                                          -->
+  <!-- ============================================================ -->
+  <aside class="sidebar">
+    <!-- Brand -->
+    <div class="sidebar-brand">
+      <div class="brand-icon">6</div>
+      <div class="brand-info">
+        <h2>IPv6 HUB</h2>
+        <span>Enterprise Edition</span>
+      </div>
+    </div>
+
+    <!-- Navigation Links -->
+    <nav class="sidebar-menu">
+      <div class="menu-label">Menu Chính</div>
+      
+      <a class="nav-item active" id="nav-stats" onclick="switchView('stats')">
+        <div class="nav-item-left">
+          <span class="icon">📊</span>
+          <span>Thống Kê & Giám Sát</span>
+        </div>
+      </a>
+
+      <a class="nav-item" id="nav-proxies" onclick="switchView('proxies')">
+        <div class="nav-item-left">
+          <span class="icon">⚡</span>
+          <span>Quản Lý Cổng Proxy</span>
+        </div>
+        <span class="badge-pill primary" id="sidebar-proxy-count" style="font-size:0.68rem; padding:2px 7px;">0</span>
+      </a>
+
+      <a class="nav-item" id="nav-integration" onclick="switchView('integration')">
+        <div class="nav-item-left">
+          <span class="icon">📖</span>
+          <span>Tích Hợp & API</span>
+        </div>
+      </a>
+
+      <div class="menu-label" style="margin-top:10px;">Hệ Thống</div>
+
+      <a class="nav-item" id="nav-settings" onclick="switchView('settings')">
+        <div class="nav-item-left">
+          <span class="icon">⚙️</span>
+          <span>Cài Đặt Bảo Mật</span>
+        </div>
+      </a>
+    </nav>
+
+    <!-- Sidebar Footer -->
+    <div class="sidebar-footer">
+      <div class="shield-widget">
+        <div class="shield-header">
+          <span>🛡️ NDP Safe Guard</span>
+          <span>ACTIVE</span>
+        </div>
+        <span class="shield-desc">Chống sập bảng NDP nhà mạng, an toàn tuyệt đối cho VPS.</span>
+      </div>
+
+      <div class="user-profile">
+        <div class="user-meta">
+          <div class="user-avatar">👤</div>
+          <div>
+            <div class="user-name">admin</div>
+            <div class="user-role">Super Administrator</div>
+          </div>
+        </div>
+        <button class="btn btn-danger btn-sm" onclick="doLogout()" title="Đăng xuất">
+          🚪
+        </button>
+      </div>
+    </div>
+  </aside>
+
+  <!-- ============================================================ -->
+  <!-- MAIN WORKSPACE (BÊN PHẢI)                                   -->
+  <!-- ============================================================ -->
+  <div class="main-wrapper">
+    <!-- Top Header -->
+    <header class="top-header">
+      <div class="header-left">
+        <div class="breadcrumb-title" id="header-breadcrumb-title">Thống Kê & Giám Sát</div>
+        <div class="breadcrumb-sub" id="header-breadcrumb-sub">Tổng quan lưu lượng, hiệu năng VPS và cảnh báo an toàn mạng</div>
+      </div>
+
+      <div class="header-right">
+        <button class="btn btn-secondary btn-sm" onclick="loadAllData()" title="Làm mới dữ liệu">
+          🔄 Làm Mới
+        </button>
+        <button class="btn btn-accent btn-sm" onclick="openBulkModal()">
+          ⚡ Tạo Hàng Loạt
+        </button>
+        <button class="btn btn-primary btn-sm" onclick="openCreateModal()">
+          + Thêm Cổng
+        </button>
+      </div>
+    </header>
+
+    <!-- Page Body -->
+    <main class="page-container">
+      <!-- System Overview Strip -->
+      <div class="system-banner">
+        <div class="banner-stats">
+          <div class="stat-item">
+            <span class="stat-label">IPv4 Máy Chủ (Host)</span>
+            <span class="stat-val" id="disp-ipv4">...</span>
+          </div>
+          <div class="stat-item">
+            <span class="stat-label">Subnet Định Tuyến IPv6</span>
+            <span class="stat-val" id="disp-subnet">...</span>
+          </div>
+          <div class="stat-item">
+            <span class="stat-label">Giao Thức Proxy</span>
+            <span class="stat-val" style="color:var(--cyan);">HTTP & SOCKS5</span>
+          </div>
+          <div class="stat-item">
+            <span class="stat-label">Thời Gian Hoạt Động (Uptime)</span>
+            <span class="stat-val" id="disp-uptime">0h 0m</span>
+          </div>
+        </div>
+        <div style="display:flex; align-items:center; gap:8px;">
+          <span class="badge-pill primary" id="disp-total-badge">0 Cổng Cấu Hình</span>
+          <span class="badge-pill success" id="disp-active-badge">0 Đang Chạy</span>
+        </div>
+      </div>
+
+      <!-- ============================================================ -->
+      <!-- TAB 1: THỐNG KÊ & GIÁM SÁT                                   -->
+      <!-- ============================================================ -->
+      <div class="tab-content active" id="tab-stats">
+        <!-- 4 KPI Cards -->
+        <div class="kpi-row">
+          <div class="kpi-card c-primary">
+            <div class="kpi-top">
+              <span class="kpi-title">CỔNG ĐANG HOẠT ĐỘNG</span>
+              <div class="kpi-icon">⚡</div>
+            </div>
+            <div class="kpi-value" id="kpi-active-ports">0 / 0</div>
+            <div class="kpi-desc" id="kpi-active-desc">0% tổng số cổng đang mở</div>
+          </div>
+
+          <div class="kpi-card c-cyan">
+            <div class="kpi-top">
+              <span class="kpi-title">TỔNG LƯU LƯỢNG ĐÃ DÙNG</span>
+              <div class="kpi-icon">📶</div>
+            </div>
+            <div class="kpi-value" id="kpi-total-traffic">0 MB</div>
+            <div class="kpi-desc">Băng thông luân chuyển qua IPv6</div>
+          </div>
+
+          <div class="kpi-card c-emerald">
+            <div class="kpi-top">
+              <span class="kpi-title">BỘ NHỚ RAM VPS</span>
+              <div class="kpi-icon">💻</div>
+            </div>
+            <div class="kpi-value" id="kpi-ram">0 MB</div>
+            <div class="kpi-desc" id="kpi-goroutines">Goroutines: 0</div>
+          </div>
+
+          <div class="kpi-card c-amber">
+            <div class="kpi-top">
+              <span class="kpi-title">CƠ CHẾ XOAY IP</span>
+              <div class="kpi-icon">🔄</div>
+            </div>
+            <div class="kpi-value" id="kpi-rot-summary">0 Sticky / 0 Req</div>
+            <div class="kpi-desc">Bảo toàn kết nối, chống khóa VPS</div>
+          </div>
+        </div>
+
+        <!-- Safe Shield Explanation -->
+        <div class="guard-banner">
+          <div class="guard-icon">🛡️</div>
+          <div class="guard-content">
+            <h4>Công Nghệ Any-IP Nonlocal Bind & NDP Safe Proxying</h4>
+            <p>
+              Khác với các công cụ thông thường thêm hàng ngàn IP ảo trực tiếp vào card mạng (gây tràn bảng Neighbor Cache làm sập router nhà mạng và bị khoá VPS),
+              hệ thống sử dụng cơ chế <strong>Linux Nonlocal Bind + Phân giải NDP theo nhu cầu</strong>. Toàn bộ dải <code>/64</code> (hơn 18 tỷ tỷ địa chỉ IPv6)
+              xoay ngẫu nhiên vô tận mà không bao giờ gây nghẽn gateway nhà mạng.
+            </p>
+          </div>
+        </div>
+
+        <!-- Charts Grid -->
+        <div class="grid-2col">
+          <!-- Live Bandwidth SVG Chart -->
+          <div class="panel-card">
+            <div class="panel-head">
+              <span class="panel-title">📈 Băng Thông Realtime (Tốc Độ / Giây)</span>
+              <span class="badge-pill success"><span class="dot-indicator"></span> Trực Tiếp 5s</span>
+            </div>
+            <div class="chart-viewport">
+              <svg class="chart-svg" id="traffic-svg" viewBox="0 0 500 180" preserveAspectRatio="none">
+                <defs>
+                  <linearGradient id="chartGrad" x1="0" y1="0" x2="0" y2="1">
+                    <stop offset="0%" stop-color="#6366f1" stop-opacity="0.45"/>
+                    <stop offset="100%" stop-color="#6366f1" stop-opacity="0.0"/>
+                  </linearGradient>
+                </defs>
+                <path id="chart-area" d="" fill="url(#chartGrad)"></path>
+                <path id="chart-line" d="" fill="none" stroke="#6366f1" stroke-width="2.5"></path>
+              </svg>
+            </div>
+            <div style="display:flex; justify-content:space-between; font-size:0.75rem; color:var(--text-muted);">
+              <span>Theo dõi trong 60 giây gần nhất</span>
+              <span id="chart-peak-val" style="color:#fff; font-weight:600;">Đỉnh: 0 KB/s</span>
+            </div>
+          </div>
+
+          <!-- Rotation Breakdown -->
+          <div class="panel-card">
+            <div class="panel-head">
+              <span class="panel-title">🔄 Phân Bổ Chế Độ Xoay IP</span>
+            </div>
+            <div class="prog-list">
+              <div class="prog-item">
+                <div class="prog-meta">
+                  <span>Sticky (Giữ IP 5s/10s/30s)</span>
+                  <span id="rot-sticky-count" style="color:var(--cyan);">0</span>
+                </div>
+                <div class="prog-bg">
+                  <div class="prog-fill" id="rot-sticky-bar" style="width:0%; background:var(--cyan);"></div>
+                </div>
+              </div>
+              <div class="prog-item">
+                <div class="prog-meta">
+                  <span>Mỗi Request 1 IP Mới</span>
+                  <span id="rot-request-count" style="color:var(--primary);">0</span>
+                </div>
+                <div class="prog-bg">
+                  <div class="prog-fill" id="rot-request-bar" style="width:0%; background:var(--primary);"></div>
+                </div>
+              </div>
+              <div class="prog-item">
+                <div class="prog-meta">
+                  <span>IP Tĩnh Cố Định</span>
+                  <span id="rot-static-count">0</span>
+                </div>
+                <div class="prog-bg">
+                  <div class="prog-fill" id="rot-static-bar" style="width:0%; background:var(--text-muted);"></div>
+                </div>
+              </div>
+            </div>
+
+            <div style="background:rgba(255,255,255,0.03); border-radius:var(--radius-sm); padding:12px; font-size:0.75rem; color:var(--text-secondary); line-height:1.4; margin-top:auto;">
+              💡 <strong>Khuyên dùng:</strong> Nuôi tài khoản hãy chọn <em>Sticky 10s - 30s</em> hoặc dùng <em>Session Key</em> để các luồng không bị đổi IP đột ngột làm kích hoạt checkpoint!
+            </div>
+          </div>
+        </div>
+
+        <!-- Top 5 Proxies Table -->
+        <div class="table-card">
+          <div class="table-toolbar">
+            <span style="font-weight:700; font-size:0.95rem; color:#fff;">🔥 Top 5 Cổng Proxy Tiêu Thụ Nhiều Data Nhất</span>
+            <button class="btn btn-secondary btn-sm" onclick="switchView('proxies')">Xem Toàn Bộ Cổng →</button>
+          </div>
+          <table class="data-table">
+            <thead>
+              <tr>
+                <th style="width:60px;">Top</th>
+                <th>Cổng (Port)</th>
+                <th>Tài Khoản</th>
+                <th>Chế Độ Xoay</th>
+                <th>Lưu Lượng Đã Dùng</th>
+                <th>Trạng Thái</th>
+              </tr>
+            </thead>
+            <tbody id="top-proxies-body">
+              <tr><td colspan="6" style="text-align:center; color:var(--text-muted); padding:30px;">Đang nạp dữ liệu...</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <!-- ============================================================ -->
+      <!-- TAB 2: QUẢN LÝ CỔNG PROXY                                    -->
+      <!-- ============================================================ -->
+      <div class="tab-content" id="tab-proxies">
+        <div class="table-card">
+          <!-- Toolbar -->
+          <div class="table-toolbar">
+            <div style="display:flex; align-items:center; gap:12px; flex-wrap:wrap;">
+              <div class="search-box">
+                <span>🔍</span>
+                <input type="text" id="proxy-search" placeholder="Tìm theo Port, User..." oninput="filterProxies()">
+              </div>
+              <div class="filter-group">
+                <button class="filter-btn active" onclick="setFilter('all', this)">Tất Cả (<span id="count-all">0</span>)</button>
+                <button class="filter-btn" onclick="setFilter('active', this)">Đang Bật (<span id="count-active">0</span>)</button>
+                <button class="filter-btn" onclick="setFilter('sticky', this)">Sticky (Theo giây)</button>
+                <button class="filter-btn" onclick="setFilter('request', this)">Mỗi Request 1 IP</button>
+              </div>
+            </div>
+
+            <div style="display:flex; align-items:center; gap:8px;">
+              <button class="btn btn-secondary btn-sm" onclick="openExportModal()">
+                📥 Xuất File (Export)
+              </button>
+              <button class="btn btn-accent btn-sm" onclick="openBulkModal()">
+                ⚡ Tạo Hàng Loạt
+              </button>
+              <button class="btn btn-primary btn-sm" onclick="openCreateModal()">
+                + Thêm Cổng
+              </button>
+            </div>
+          </div>
+
+          <!-- Table -->
+          <table class="data-table">
+            <thead>
+              <tr>
+                <th style="width:50px;">STT</th>
+                <th>Cổng Lắng Nghe</th>
+                <th>Giao Thức</th>
+                <th>Tài Khoản Xác Thực</th>
+                <th>Chế Độ Xoay</th>
+                <th>Lưu Lượng / Giới Hạn</th>
+                <th>Hạn Sử Dụng</th>
+                <th style="text-align:center;">Bật / Tắt</th>
+                <th style="text-align:right;">Thao Tác</th>
+              </tr>
+            </thead>
+            <tbody id="proxy-table-body">
+              <tr><td colspan="9" style="text-align:center; color:var(--text-muted); padding:40px;">Đang tải danh sách proxy...</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <!-- ============================================================ -->
+      <!-- TAB 3: TÍCH HỢP & HƯỚNG DẪN                                  -->
+      <!-- ============================================================ -->
+      <div class="tab-content" id="tab-integration">
+        <div style="display:grid; grid-template-columns: 1fr 1fr; gap:24px;">
+          <!-- Antidetect Guide -->
+          <div class="panel-card">
+            <div class="panel-head">
+              <span class="panel-title">🌐 Hướng Dẫn Antidetect Browser (Gologin, AdsPower, Hidemyacc)</span>
+            </div>
+            <div style="font-size:0.84rem; color:var(--text-secondary); display:flex; flex-direction:column; gap:14px; line-height:1.5;">
+              <div>
+                <strong style="color:#fff;">1. Thông tin điền vào profile trình duyệt:</strong>
+                <p style="margin-top:4px;">
+                  - Loại Proxy: Chọn <code>HTTP</code> hoặc <code>SOCKS5</code> (server tự động nhận diện).<br>
+                  - IP / Host: <code id="guide-host">103.199.11.9</code><br>
+                  - Port: Cổng bạn đã gán cho profile đó (VD: <code>10010</code>).<br>
+                  - User / Password: Tài khoản xác thực của cổng đó.
+                </p>
+              </div>
+
+              <div style="background:rgba(99,102,241,0.08); border:1px solid rgba(99,102,241,0.25); border-radius:var(--radius-sm); padding:14px;">
+                <strong style="color:#a5b4fc;">2. Cơ Chế 50 Luồng Dùng Chung 1 Cổng (Session-based Sticky):</strong>
+                <p style="margin-top:4px; font-size:0.78rem;">
+                  Bạn không nhất thiết phải tạo 50 cổng khác nhau! Chỉ cần mở <strong>1 cổng duy nhất</strong> với chế độ Sticky X giây,
+                  sau đó các luồng client truyền username kèm tag luồng:
+                  <br><br>
+                  Luồng 1: <code>user-session-1</code> &nbsp;|&nbsp;
+                  Luồng 2: <code>user-session-2</code> &nbsp;|&nbsp;
+                  Luồng 50: <code>user-session-50</code>
+                  <br><br>
+                  Mỗi luồng sẽ tự động nhận <strong>1 IPv6 riêng biệt</strong>, giữ nguyên trong thời gian đã cài (VD: 10s/30s) mà hoàn toàn không bị đụng độ nhau!
+                </p>
+              </div>
+
+              <div>
+                <strong style="color:#fff;">3. Lệnh cURL Kiểm Tra Nhanh:</strong>
+                <div class="code-viewer">curl -x http://user:pass@103.199.11.9:10010 https://api64.ipify.org?format=json</div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Code Snippets -->
+          <div class="panel-card">
+            <div class="panel-head">
+              <span class="panel-title">💻 Code Mẫu Python Requests Đa Luồng</span>
+            </div>
+            <div class="code-viewer" style="max-height:350px;">import requests
+
+# 50 luồng dùng chung 1 cổng mà mỗi luồng nhận 1 IPv6 xoay độc lập:
+session_id = "thread_1"
+proxy_user = f"user-session-{session_id}"
+proxy_pass = "mypassword"
+server_ip = "103.199.11.9"
+port = 10010
+
+proxies = {
+    "http": f"http://{proxy_user}:{proxy_pass}@{server_ip}:{port}",
+    "https": f"http://{proxy_user}:{proxy_pass}@{server_ip}:{port}",
+}
+
+response = requests.get("https://api64.ipify.org?format=json", proxies=proxies, timeout=10)
+print("IPv6 của luồng:", response.json()["ip"])</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ============================================================ -->
+      <!-- TAB 4: CÀI ĐẶT HỆ THỐNG                                      -->
+      <!-- ============================================================ -->
+      <div class="tab-content" id="tab-settings">
+        <div style="display:grid; grid-template-columns: 1fr 1fr; gap:24px;">
+          <!-- Admin Password -->
+          <div class="panel-card">
+            <div class="panel-head">
+              <span class="panel-title">🔒 Đổi Mật Khẩu Quản Trị Web</span>
+            </div>
+            <form onsubmit="changeAdminSettings(event)" style="display:flex; flex-direction:column; gap:14px;">
+              <div class="form-field">
+                <label>Mật Khẩu Hiện Tại</label>
+                <input type="password" id="curr-pass" class="form-input" placeholder="••••••••" required>
+              </div>
+              <div class="form-field">
+                <label>Tên Đăng Nhập Mới (Để trống nếu giữ nguyên)</label>
+                <input type="text" id="new-user" class="form-input" placeholder="admin">
+              </div>
+              <div class="form-field">
+                <label>Mật Khẩu Mới</label>
+                <input type="password" id="new-pass" class="form-input" placeholder="••••••••" required>
+              </div>
+              <button type="submit" class="btn btn-primary" style="margin-top:6px;">Lưu Thay Đổi</button>
+            </form>
+          </div>
+
+          <!-- Daemon & Kernel Status -->
+          <div class="panel-card">
+            <div class="panel-head">
+              <span class="panel-title">⚙️ Thông Số Hạ Tầng Linux</span>
+            </div>
+            <div style="font-size:0.82rem; color:var(--text-secondary); display:flex; flex-direction:column; gap:10px;">
+              <div>
+                <strong>Dịch Vụ Systemd:</strong>
+                <p><code>ipv6-proxy.service</code> (Đang chạy nền)</p>
+              </div>
+              <div>
+                <strong>NDP Proxy Daemon:</strong>
+                <p><code>ndppd.service</code> trên interface <code>eth0</code></p>
+              </div>
+              <div>
+                <strong>Kernel Nonlocal Bind:</strong>
+                <p><code>net.ipv6.ip_nonlocal_bind = 1</code></p>
+              </div>
+              <div>
+                <strong>Tệp Lưu Trữ Proxy:</strong>
+                <p><code>/root/IPv6-Gen-System/linux/data/proxies.json</code></p>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </main>
+  </div>
+
+  <!-- ============================================================ -->
+  <!-- MODAL: TẠO / SỬA PROXY                                       -->
+  <!-- ============================================================ -->
+  <div class="modal-backdrop" id="modal-proxy">
+    <div class="modal-box">
+      <div class="modal-top">
+        <h3 id="modal-proxy-title">Thêm Cổng Proxy Mới</h3>
+        <button class="modal-close" onclick="closeModal('modal-proxy')">&times;</button>
+      </div>
+      <form id="form-proxy" onsubmit="saveProxy(event)">
+        <input type="hidden" id="p-id">
+        <div class="modal-body">
+          <div class="form-row">
+            <div class="form-field">
+              <label>Cổng Lắng Nghe (Port) *</label>
+              <input type="number" id="p-port" class="form-input" placeholder="10000" min="1024" max="65535" required>
+            </div>
+            <div class="form-field">
+              <label>Hạn Sử Dụng (Số ngày)</label>
+              <input type="number" id="p-days" class="form-input" placeholder="0 = Không giới hạn" min="0" value="30">
+            </div>
+          </div>
+
+          <div class="form-row">
+            <div class="form-field">
+              <label>Tài Khoản (Username)</label>
+              <input type="text" id="p-user" class="form-input" placeholder="Để trống = Không pass">
+            </div>
+            <div class="form-field">
+              <label>Mật Khẩu (Password)</label>
+              <div style="display:flex; gap:6px;">
+                <input type="text" id="p-pass" class="form-input" placeholder="Để trống = Không pass">
+                <button type="button" class="btn btn-secondary btn-sm" onclick="genRandPass('p-pass')">🎲</button>
+              </div>
+            </div>
+          </div>
+
+          <div class="form-field">
+            <label>Chế Độ Xoay IPv6 *</label>
+            <select id="p-rot-type" class="form-input" onchange="toggleStickyInput(this.value, 'p-sticky-group')">
+              <option value="sticky">Xoay Giữ IP Theo Thời Gian (Sticky Seconds)</option>
+              <option value="request">Mỗi Request 1 IP Mới (Xoay Liên Tục)</option>
+              <option value="static">Cố Định 1 IPv6 (Static IP)</option>
+            </select>
+          </div>
+
+          <div class="form-field" id="p-sticky-group">
+            <label>Thời Gian Giữ 1 IP (Giây) *</label>
+            <input type="number" id="p-sticky-sec" class="form-input" value="10" min="2" max="86400">
+            <span class="form-tip">Ví dụ: Điền <strong>5</strong>, <strong>10</strong> hoặc <strong>30</strong> giây. Hết thời gian này lượt gọi tiếp theo sẽ tự nhảy sang IPv6 mới.</span>
+          </div>
+
+          <div class="form-field">
+            <label>Giới Hạn Dung Lượng (GB)</label>
+            <input type="number" id="p-maxgb" class="form-input" placeholder="0 = Không giới hạn" min="0" step="0.5" value="0">
+          </div>
+        </div>
+        <div class="modal-bottom">
+          <button type="button" class="btn btn-secondary" onclick="closeModal('modal-proxy')">Hủy</button>
+          <button type="submit" class="btn btn-primary">Lưu Cổng Proxy</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- ============================================================ -->
+  <!-- MODAL: BULK GENERATE                                         -->
+  <!-- ============================================================ -->
+  <div class="modal-backdrop" id="modal-bulk">
+    <div class="modal-box">
+      <div class="modal-top">
+        <h3>⚡ Tạo Cổng Proxy Hàng Loạt (Bulk)</h3>
+        <button class="modal-close" onclick="closeModal('modal-bulk')">&times;</button>
+      </div>
+      <form onsubmit="submitBulkProxies(event)">
+        <div class="modal-body">
+          <div class="form-row">
+            <div class="form-field">
+              <label>Cổng Bắt Đầu (Start Port) *</label>
+              <input type="number" id="b-start-port" class="form-input" value="10000" min="1024" max="65500" required>
+            </div>
+            <div class="form-field">
+              <label>Số Lượng Cổng Cần Tạo *</label>
+              <input type="number" id="b-count" class="form-input" value="10" min="1" max="500" required>
+            </div>
+          </div>
+
+          <div class="form-row">
+            <div class="form-field">
+              <label>Tiền Tố Username</label>
+              <input type="text" id="b-prefix" class="form-input" value="proxy" placeholder="proxy">
+            </div>
+            <div class="form-field">
+              <label>Mật Khẩu Chung</label>
+              <input type="text" id="b-pass" class="form-input" placeholder="Để trống = Random riêng">
+            </div>
+          </div>
+
+          <div class="form-field">
+            <label>Chế Độ Xoay IPv6 *</label>
+            <select id="b-rot-type" class="form-input" onchange="toggleStickyInput(this.value, 'b-sticky-group')">
+              <option value="sticky">Xoay Giữ IP Theo Thời Gian (Sticky Seconds)</option>
+              <option value="request">Mỗi Request 1 IP Mới (Xoay Liên Tục)</option>
+              <option value="static">Cố Định 1 IPv6 (Static IP)</option>
+            </select>
+          </div>
+
+          <div class="form-field" id="b-sticky-group">
+            <label>Thời Gian Giữ IP (Giây) *</label>
+            <input type="number" id="b-sticky-sec" class="form-input" value="10" min="2" max="86400">
+            <span class="form-tip">Mỗi cổng trong danh sách sẽ có 1 IP riêng biệt và tự đổi IP sau đúng số giây này!</span>
+          </div>
+
+          <div class="form-row">
+            <div class="form-field">
+              <label>Hạn Sử Dụng (Ngày)</label>
+              <input type="number" id="b-days" class="form-input" value="30" min="0">
+            </div>
+            <div class="form-field">
+              <label>Giới Hạn GB (Mỗi Cổng)</label>
+              <input type="number" id="b-maxgb" class="form-input" value="0" min="0">
+            </div>
+          </div>
+        </div>
+        <div class="modal-bottom">
+          <button type="button" class="btn btn-secondary" onclick="closeModal('modal-bulk')">Hủy</button>
+          <button type="submit" class="btn btn-accent">⚡ Bắt Đầu Tạo Ngay</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- ============================================================ -->
+  <!-- MODAL: EXPORT                                                -->
+  <!-- ============================================================ -->
+  <div class="modal-backdrop" id="modal-export">
+    <div class="modal-box">
+      <div class="modal-top">
+        <h3>📥 Xuất Danh Sách Proxy</h3>
+        <button class="modal-close" onclick="closeModal('modal-export')">&times;</button>
+      </div>
+      <div class="modal-body">
+        <div style="display:flex; gap:10px;">
+          <button class="btn btn-secondary btn-sm" onclick="fetchExport('ip_port_user_pass')">Dạng IP:Port:User:Pass</button>
+          <button class="btn btn-secondary btn-sm" onclick="fetchExport('json')">Dạng JSON</button>
+        </div>
+        <div class="code-viewer" id="export-box" style="height:250px;">Đang trích xuất...</div>
+      </div>
+      <div class="modal-bottom">
+        <button type="button" class="btn btn-secondary" onclick="closeModal('modal-export')">Đóng</button>
+        <button type="button" class="btn btn-primary" onclick="copyBoxText('export-box')">📋 Sao Chép Toàn Bộ</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============================================================ -->
+  <!-- MODAL: SNIPPET                                               -->
+  <!-- ============================================================ -->
+  <div class="modal-backdrop" id="modal-snippet">
+    <div class="modal-box">
+      <div class="modal-top">
+        <h3 id="snippet-title">Code Mẫu Tích Hợp</h3>
+        <button class="modal-close" onclick="closeModal('modal-snippet')">&times;</button>
+      </div>
+      <div class="modal-body">
+        <div class="form-field">
+          <label>Lệnh cURL</label>
+          <div class="code-viewer" id="snip-curl">...</div>
+        </div>
+        <div class="form-field">
+          <label>Code Python Đa Luồng Với Session Sticky</label>
+          <div class="code-viewer" id="snip-python">...</div>
+        </div>
+      </div>
+      <div class="modal-bottom">
+        <button type="button" class="btn btn-secondary" onclick="closeModal('modal-snippet')">Đóng</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============================================================ -->
+  <!-- LOGIN OVERLAY                                                -->
+  <!-- ============================================================ -->
+  <div id="login-modal" style="display:none;">
+    <div class="login-box">
+      <div style="display:flex; justify-content:center;">
+        <div class="brand-icon" style="width:52px; height:52px; font-size:24px;">6</div>
+      </div>
+      <div>
+        <h2 style="font-size:1.4rem; font-weight:800; color:#fff;">IPv6 Proxy Hub</h2>
+        <p style="font-size:0.8rem; color:var(--text-secondary); margin-top:4px;">Đăng nhập để vào bảng điều khiển</p>
+      </div>
+      <form onsubmit="doLogin(event)" style="display:flex; flex-direction:column; gap:14px; text-align:left;">
+        <div class="form-field">
+          <label>Tài khoản</label>
+          <input type="text" id="login-user" class="form-input" placeholder="admin" required autofocus>
+        </div>
+        <div class="form-field">
+          <label>Mật khẩu</label>
+          <input type="password" id="login-pass" class="form-input" placeholder="••••••••" required>
+        </div>
+        <button type="submit" class="btn btn-primary" style="margin-top:8px; padding:12px;">Đăng Nhập Quản Trị</button>
+      </form>
+    </div>
+  </div>
+
+  <!-- Toast Container -->
+  <div id="toast-container"></div>
+
+  <script src="/js/app.js"></script>
+</body>
+</html>
