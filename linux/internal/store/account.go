@@ -25,7 +25,9 @@ type ProxyAccount struct {
 	Password     string         `json:"password"`      // Mật khẩu auth
 	Proto        string         `json:"proto"`         // "both" (HTTP+SOCKS5 auto-detect)
 	MaxBytes     int64          `json:"max_bytes"`     // Hạn mức dung lượng (0 = không giới hạn)
-	BytesUsed    int64          `json:"bytes_used"`    // Lưu lượng đã dùng (bytes)
+	BytesUsed    int64          `json:"bytes_used"`    // Tổng lưu lượng đã dùng (bytes) = BytesUp + BytesDown
+	BytesUp      int64          `json:"bytes_up"`      // Lưu lượng Upload (tải lên)
+	BytesDown    int64          `json:"bytes_down"`    // Lưu lượng Download (tải về)
 	ExpiresAt    *time.Time     `json:"expires_at"`    // Hạn dùng (nil = vĩnh viễn)
 	RotationType RotationPolicy `json:"rotation_type"` // "request" | "sticky" | "static"
 	StickySec    int            `json:"sticky_sec"`    // Số giây giữ IP
@@ -65,6 +67,22 @@ func (p *ProxyAccount) CanAccess() (bool, string) {
 		return false, "Proxy đã dùng hết dung lượng (GB)"
 	}
 	return true, ""
+}
+
+// AddUp atomically increments uploaded bandwidth and total bandwidth
+func (p *ProxyAccount) AddUp(bytes int64) {
+	if bytes > 0 {
+		atomic.AddInt64(&p.BytesUp, bytes)
+		atomic.AddInt64(&p.BytesUsed, bytes)
+	}
+}
+
+// AddDown atomically increments downloaded bandwidth and total bandwidth
+func (p *ProxyAccount) AddDown(bytes int64) {
+	if bytes > 0 {
+		atomic.AddInt64(&p.BytesDown, bytes)
+		atomic.AddInt64(&p.BytesUsed, bytes)
+	}
 }
 
 // AddTraffic atomically increments used bandwidth

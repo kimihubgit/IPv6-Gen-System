@@ -83,6 +83,8 @@ func (ws *WebServer) handleStats(w http.ResponseWriter, r *http.Request) {
 	proxies := ws.store.GetAll()
 	activeCount := 0
 	var totalBytes int64 = 0
+	var totalUp int64 = 0
+	var totalDown int64 = 0
 
 	rotCounts := map[string]int{
 		"request": 0,
@@ -93,6 +95,8 @@ func (ws *WebServer) handleStats(w http.ResponseWriter, r *http.Request) {
 	now := time.Now()
 	for _, p := range proxies {
 		totalBytes += p.BytesUsed
+		totalUp += p.BytesUp
+		totalDown += p.BytesDown
 		rotType := string(p.RotationType)
 		if rotType == "" {
 			rotType = "request"
@@ -174,6 +178,8 @@ func (ws *WebServer) handleStats(w http.ResponseWriter, r *http.Request) {
 		"active_proxies":  activeCount,
 		"total_proxies":   len(proxies),
 		"total_bytes":     totalBytes,
+		"total_up":        totalUp,
+		"total_down":      totalDown,
 		"uptime":          uptimeStr,
 		"prefix":          ws.prefix,
 		"public_ip":       ws.publicIPv4,
@@ -441,6 +447,8 @@ func (ws *WebServer) handleProxyItem(w http.ResponseWriter, r *http.Request) {
 
 	if len(parts) > 1 && parts[1] == "reset" && r.Method == http.MethodPost {
 		acc.BytesUsed = 0
+		acc.BytesUp = 0
+		acc.BytesDown = 0
 		_ = ws.store.Save()
 		jsonResponse(w, http.StatusOK, map[string]string{"status": "ok", "message": "Đã reset dung lượng về 0 GB"})
 		return
@@ -629,6 +637,8 @@ func (ws *WebServer) handleProxiesBatch(w http.ResponseWriter, r *http.Request) 
 			acc := ws.store.GetByID(id)
 			if acc != nil {
 				acc.BytesUsed = 0
+				acc.BytesUp = 0
+				acc.BytesDown = 0
 				count++
 			}
 		}

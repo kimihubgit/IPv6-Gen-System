@@ -217,13 +217,12 @@ func (pl *PortListener) handleHTTP(clientConn net.Conn, br *bufio.Reader) {
 		defer destConn.Close()
 
 		countedClient := NewCountingConn(clientConn, pl.account)
-		countedDest := NewCountingConn(destConn, pl.account)
 
 		_, err = countedClient.Write([]byte("HTTP/1.1 200 Connection Established\r\n\r\n"))
 		if err != nil {
 			return
 		}
-		relayBidirectional(countedClient, countedDest)
+		relayBidirectional(countedClient, destConn)
 	} else {
 		// Plain HTTP: Use proper HTTP RoundTrip to stream response without socket hang
 		pl.forwardPlainHTTP(clientConn, req, outIP)
@@ -413,8 +412,7 @@ func (pl *PortListener) handleSOCKS5Request(clientConn net.Conn, br *bufio.Reade
 	}
 
 	countedClient := NewCountingConn(clientConn, pl.account)
-	countedDest := NewCountingConn(destConn, pl.account)
-	relayBidirectional(countedClient, countedDest)
+	relayBidirectional(countedClient, destConn)
 }
 
 // relayBidirectional connects two streams using a zero-allocation buffer pool.

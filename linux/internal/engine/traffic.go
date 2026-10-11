@@ -23,7 +23,7 @@ func NewCountingConn(conn net.Conn, acc *store.ProxyAccount) *CountingConn {
 func (c *CountingConn) Read(b []byte) (n int, err error) {
 	n, err = c.Conn.Read(b)
 	if n > 0 && c.account != nil {
-		c.account.AddTraffic(int64(n))
+		c.account.AddUp(int64(n))
 	}
 	return n, err
 }
@@ -31,7 +31,7 @@ func (c *CountingConn) Read(b []byte) (n int, err error) {
 func (c *CountingConn) Write(b []byte) (n int, err error) {
 	n, err = c.Conn.Write(b)
 	if n > 0 && c.account != nil {
-		c.account.AddTraffic(int64(n))
+		c.account.AddDown(int64(n))
 	}
 	return n, err
 }

@@ -1503,10 +1503,18 @@ function App() {
                             {/* Traffic */}
                             <td className="py-3 px-3 font-mono">
                               <div className="flex items-center gap-1.5">
-                                <span className={p.max_bytes > 0 && p.bytes_used >= p.max_bytes ? "text-rose-400 font-bold" : "text-slate-200"}>
+                                <span className={p.max_bytes > 0 && p.bytes_used >= p.max_bytes ? "text-rose-400 font-bold" : "text-slate-100 font-semibold"}>
                                   {formatBytes(p.bytes_used)}
                                 </span>
                                 <span className="text-slate-500 text-[11px]">{maxText}</span>
+                              </div>
+                              <div className="flex items-center gap-2 mt-0.5 text-[10px]">
+                                <span className="text-emerald-400 font-medium" title="Upload (Tải lên)">
+                                  ↑ {formatBytes(p.bytes_up || 0)}
+                                </span>
+                                <span className="text-cyan-400 font-medium" title="Download (Tải về)">
+                                  ↓ {formatBytes(p.bytes_down || 0)}
+                                </span>
                               </div>
                               {p.max_bytes > 0 && p.bytes_used >= p.max_bytes && (
                                 <span className="inline-block mt-0.5 px-1.5 py-0.2 rounded text-[9px] font-semibold bg-rose-500/20 text-rose-300 border border-rose-500/30">
@@ -1622,6 +1630,10 @@ function App() {
                 <div className="text-xs text-slate-400 font-medium">Tổng lưu lượng đã truyền</div>
                 <div className="text-2xl font-bold text-indigo-400 font-mono mt-1">
                   {formatBytes(stats?.total_bytes)}
+                </div>
+                <div className="flex items-center gap-2.5 text-[11px] font-mono mt-1 text-slate-400">
+                  <span className="text-emerald-400">↑ {formatBytes(stats?.total_up || 0)}</span>
+                  <span className="text-cyan-400">↓ {formatBytes(stats?.total_down || 0)}</span>
                 </div>
               </div>
               <div className="bg-slate-900/60 border border-slate-800/80 rounded-xl p-4">
@@ -2335,6 +2347,8 @@ function EditProxyModal({ proxy, folders, onClose, onSuccess, onCreateFolder, on
       const data = await res.json();
       if (res.ok) {
         setBytesUsed(0);
+        proxy.bytes_up = 0;
+        proxy.bytes_down = 0;
         if (onShowToast) onShowToast(data.message || "Đã reset dung lượng về 0 GB!");
         if (onRefresh) onRefresh();
       } else {
@@ -2455,9 +2469,13 @@ function EditProxyModal({ proxy, folders, onClose, onSuccess, onCreateFolder, on
                 <Icon name="database" className="w-3.5 h-3.5 text-indigo-400" />
                 Gia Hạn Dung Lượng & Thời Hạn
               </span>
-              <span className="text-[11px] text-slate-400">
-                Đã dùng: <strong className="text-amber-400 font-mono">{formatBytes(bytesUsed)}</strong>
-              </span>
+              <div className="text-right text-[11px] text-slate-400">
+                <div>Tổng: <strong className="text-amber-400 font-mono">{formatBytes(bytesUsed)}</strong></div>
+                <div className="flex items-center justify-end gap-2 text-[10px] mt-0.5 font-mono">
+                  <span className="text-emerald-400">↑ {formatBytes(proxy.bytes_up || 0)}</span>
+                  <span className="text-cyan-400">↓ {formatBytes(proxy.bytes_down || 0)}</span>
+                </div>
+              </div>
             </div>
 
             {/* Nút Reset Dung Lượng */}
