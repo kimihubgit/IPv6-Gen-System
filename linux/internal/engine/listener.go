@@ -17,6 +17,24 @@ import (
 	"ipv6-gen-linux/internal/store"
 )
 
+// Zero-allocation 32KB buffer pool for ultra-fast streaming
+var bufferPool = sync.Pool{
+	New: func() interface{} {
+		b := make([]byte, 32*1024)
+		return &b
+	},
+}
+
+// BufferedConn wraps net.Conn with a fallback reader to consume any bytes already buffered in bufio.Reader
+type BufferedConn struct {
+	net.Conn
+	r io.Reader
+}
+
+func (b *BufferedConn) Read(p []byte) (int, error) {
+	return b.r.Read(p)
+}
+
 // PortListener listens on a TCP port and handles HTTP/SOCKS5 proxy connections
 type PortListener struct {
 	account  *store.ProxyAccount
@@ -85,7 +103,9 @@ func (pl *PortListener) acceptLoop() {
 func (pl *PortListener) handleConn(clientConn net.Conn) {
 	defer clientConn.Close()
 
-	// Check if account is currently allowed
+	TuneTCPConn(clientConn)
+
+	// Check if account is active & within quota
 	if ok, reason := pl.account.CanAccess(); !ok {
 		log.Printf("⛔ Từ chối kết nối cổng %d: %s", pl.account.Port, reason)
 		return
@@ -100,12 +120,17 @@ func (pl *PortListener) handleConn(clientConn net.Conn) {
 		return
 	}
 
+	wrappedClient := &BufferedConn{
+		Conn: clientConn,
+		r:    io.MultiReader(bufReader, clientConn),
+	}
+
 	// 0x05 -> SOCKS5 Protocol
 	if firstByte[0] == 0x05 {
-		pl.handleSOCKS5(clientConn, bufReader)
+		pl.handleSOCKS5(wrappedClient, bufReader)
 	} else {
 		// HTTP / HTTPS Proxy Protocol
-		pl.handleHTTP(clientConn, bufReader)
+		pl.handleHTTP(wrappedClient, bufReader)
 	}
 }
 
@@ -163,10 +188,10 @@ func (pl *PortListener) handleHTTP(clientConn net.Conn, br *bufio.Reader) {
 		targetHost = req.Host
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 12*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
 	defer cancel()
 
-	destConn, err := DialOutboundIPv6(ctx, targetHost, outIP)
+	destConn, _, err := DialOutbound(ctx, targetHost, outIP)
 	if err != nil {
 		_, _ = clientConn.Write([]byte("HTTP/1.1 502 Bad Gateway\r\n\r\n"))
 		return
@@ -177,12 +202,12 @@ func (pl *PortListener) handleHTTP(clientConn net.Conn, br *bufio.Reader) {
 	countedDest := NewCountingConn(destConn, pl.account)
 
 	if req.Method == http.MethodConnect {
-		// HTTPS Tunnel
+		// HTTPS Tunnel: Respond with 200 Connection Established and begin bidirectional streaming
 		_, err = countedClient.Write([]byte("HTTP/1.1 200 Connection Established\r\n\r\n"))
 		if err != nil {
 			return
 		}
-		tunnelBoth(countedClient, countedDest)
+		relayBidirectional(countedClient, countedDest)
 	} else {
 		// HTTP Plain Forwarding
 		req.Header.Del("Proxy-Authorization")
@@ -194,7 +219,7 @@ func (pl *PortListener) handleHTTP(clientConn net.Conn, br *bufio.Reader) {
 		if err != nil {
 			return
 		}
-		tunnelBoth(countedClient, countedDest)
+		relayBidirectional(countedClient, countedDest)
 	}
 }
 
@@ -323,10 +348,10 @@ func (pl *PortListener) handleSOCKS5Request(clientConn net.Conn, br *bufio.Reade
 
 	outIP := pl.sessions.PickIPv6(sessionKey, pl.account, pl.ipNet)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 12*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
 	defer cancel()
 
-	destConn, err := DialOutboundIPv6(ctx, targetAddr, outIP)
+	destConn, _, err := DialOutbound(ctx, targetAddr, outIP)
 	if err != nil {
 		_, _ = clientConn.Write([]byte{0x05, 0x04, 0x00, 0x01, 0, 0, 0, 0, 0, 0})
 		return
@@ -341,24 +366,31 @@ func (pl *PortListener) handleSOCKS5Request(clientConn net.Conn, br *bufio.Reade
 
 	countedClient := NewCountingConn(clientConn, pl.account)
 	countedDest := NewCountingConn(destConn, pl.account)
-	tunnelBoth(countedClient, countedDest)
+	relayBidirectional(countedClient, countedDest)
 }
 
-func tunnelBoth(c1, c2 net.Conn) {
+// relayBidirectional connects two streams using a zero-allocation buffer pool.
+// When one direction reaches EOF, it immediately sends a TCP FIN via CloseWrite()
+// without any artificial sleeping or waiting for timeout deadlines!
+func relayBidirectional(conn1, conn2 net.Conn) {
 	var wg sync.WaitGroup
 	wg.Add(2)
 
-	go func() {
+	pipe := func(dst, src net.Conn) {
 		defer wg.Done()
-		_, _ = io.Copy(c1, c2)
-		_ = c1.SetDeadline(time.Now().Add(5 * time.Second))
-	}()
+		bufPtr := bufferPool.Get().(*[]byte)
+		defer bufferPool.Put(bufPtr)
 
-	go func() {
-		defer wg.Done()
-		_, _ = io.Copy(c2, c1)
-		_ = c2.SetDeadline(time.Now().Add(5 * time.Second))
-	}()
+		_, _ = io.CopyBuffer(dst, src, *bufPtr)
+		if tcpConn, ok := dst.(interface{ CloseWrite() error }); ok {
+			_ = tcpConn.CloseWrite()
+		} else {
+			_ = dst.Close()
+		}
+	}
+
+	go pipe(conn1, conn2)
+	go pipe(conn2, conn1)
 
 	wg.Wait()
 }
