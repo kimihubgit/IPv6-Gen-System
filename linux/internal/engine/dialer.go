@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -53,48 +54,125 @@ func TuneTCPConn(conn net.Conn) {
 	}
 }
 
+// In-memory DNS cache to avoid hammering systemd-resolved across concurrent threads
+type dnsCacheEntry struct {
+	ips       []net.IP
+	expiresAt time.Time
+}
+
+var (
+	dnsCacheMu sync.RWMutex
+	dnsCache   = make(map[string]dnsCacheEntry)
+)
+
+func resolveHost(ctx context.Context, host string) ([]net.IP, error) {
+	cleanHost := strings.Trim(host, "[]")
+	if parsed := net.ParseIP(cleanHost); parsed != nil {
+		return []net.IP{parsed}, nil
+	}
+
+	now := time.Now()
+	dnsCacheMu.RLock()
+	entry, ok := dnsCache[cleanHost]
+	dnsCacheMu.RUnlock()
+	if ok && now.Before(entry.expiresAt) {
+		return entry.ips, nil
+	}
+
+	ips, err := net.DefaultResolver.LookupIP(ctx, "ip", cleanHost)
+	if err != nil {
+		return nil, err
+	}
+
+	dnsCacheMu.Lock()
+	dnsCache[cleanHost] = dnsCacheEntry{
+		ips:       ips,
+		expiresAt: now.Add(2 * time.Minute),
+	}
+	dnsCacheMu.Unlock()
+	return ips, nil
+}
+
 // DialOutbound connects to destination with the chosen IPv6.
 // If the destination has IPv6, it connects via tcp6 directly (ultra fast ~30-50ms).
-// If the destination only has IPv4 (IPv4-only site), it immediately falls back to IPv4
-// instead of hanging on incompatible dual-stack negotiation.
+// If the destination only has IPv4 (IPv4-only site), it immediately connects via IPv4.
 func DialOutbound(ctx context.Context, targetAddr string, outIP net.IP) (net.Conn, net.IP, error) {
 	host, port, err := net.SplitHostPort(targetAddr)
 	if err != nil {
 		host = targetAddr
 		port = "80"
-		targetAddr = net.JoinHostPort(host, port)
 	}
 
-	// 1. Try IPv6 first if we have a valid outbound IPv6
-	if outIP != nil {
-		dialer6 := &net.Dialer{
+	// 1. Resolve host using zero-latency in-memory DNS cache
+	ips, err := resolveHost(ctx, host)
+	if err != nil {
+		// Fallback to direct dial if DNS resolve failed
+		fallbackDialer := &net.Dialer{
 			Timeout:   5 * time.Second,
+			KeepAlive: 30 * time.Second,
+		}
+		conn, dialErr := fallbackDialer.DialContext(ctx, "tcp", targetAddr)
+		if dialErr == nil {
+			TuneTCPConn(conn)
+			return conn, nil, nil
+		}
+		return nil, nil, fmt.Errorf("không thể phân giải và kết nối tới %s: %w", targetAddr, err)
+	}
+
+	var ipv6List []net.IP
+	var ipv4List []net.IP
+	for _, ip := range ips {
+		if ip.To4() == nil {
+			ipv6List = append(ipv6List, ip)
+		} else {
+			ipv4List = append(ipv4List, ip)
+		}
+	}
+
+	// 2. Try IPv6 first if destination supports IPv6 and we have outIP
+	if len(ipv6List) > 0 && outIP != nil {
+		dialer6 := &net.Dialer{
+			Timeout:   3 * time.Second,
 			KeepAlive: 30 * time.Second,
 			LocalAddr: &net.TCPAddr{
 				IP: outIP,
 			},
 		}
 
-		cleanHost := strings.Trim(host, "[]")
-		// Connect directly via tcp6
-		conn, err := dialer6.DialContext(ctx, "tcp6", targetAddr)
-		if err == nil {
-			TuneTCPConn(conn)
-			return conn, outIP, nil
+		for _, dstIP := range ipv6List {
+			dstAddr := net.JoinHostPort(dstIP.String(), port)
+			conn, dialErr := dialer6.DialContext(ctx, "tcp6", dstAddr)
+			if dialErr == nil {
+				TuneTCPConn(conn)
+				return conn, outIP, nil
+			}
 		}
 
-		// If host was an explicit IPv6 literal, don't fallback to IPv4
-		if parsedIP := net.ParseIP(cleanHost); parsedIP != nil && parsedIP.To4() == nil {
-			return nil, nil, fmt.Errorf("không thể kết nối tới IPv6 %s qua %s: %w", targetAddr, outIP, err)
+		// If destination was an explicit IPv6 literal, don't fallback to IPv4
+		cleanHost := strings.Trim(host, "[]")
+		if parsed := net.ParseIP(cleanHost); parsed != nil && parsed.To4() == nil {
+			return nil, nil, fmt.Errorf("không thể kết nối tới IPv6 %s qua %s", targetAddr, outIP)
 		}
 	}
 
-	// 2. Fallback to standard dialer for IPv4-only sites
+	// 3. Fallback to IPv4 if destination is IPv4 or IPv6 dial failed
 	fallbackDialer := &net.Dialer{
-		Timeout:   6 * time.Second,
+		Timeout:   5 * time.Second,
 		KeepAlive: 30 * time.Second,
 	}
 
+	if len(ipv4List) > 0 {
+		for _, dstIP := range ipv4List {
+			dstAddr := net.JoinHostPort(dstIP.String(), port)
+			conn, dialErr := fallbackDialer.DialContext(ctx, "tcp", dstAddr)
+			if dialErr == nil {
+				TuneTCPConn(conn)
+				return conn, nil, nil
+			}
+		}
+	}
+
+	// Final generic dial
 	conn, err := fallbackDialer.DialContext(ctx, "tcp", targetAddr)
 	if err != nil {
 		return nil, nil, fmt.Errorf("không thể kết nối tới đích %s: %w", targetAddr, err)

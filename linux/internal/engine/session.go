@@ -1,9 +1,12 @@
 package engine
 
 import (
+	"crypto/rand"
+	"encoding/binary"
 	"net"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"ipv6-gen-linux/internal/store"
@@ -15,17 +18,70 @@ type SessionIPEntry struct {
 	ExpiresAt time.Time
 }
 
-// SessionManager manages sticky sessions for a port listener
+// SubnetPool maintains a warm revolving pool of pre-generated IPv6 addresses.
+// It avoids hammering upstream gateway router ARP/NDP tables during heavy concurrency bursts,
+// while guaranteeing that concurrent threads get different IPv6 addresses and load simultaneously.
+type SubnetPool struct {
+	ips     []net.IP
+	counter atomic.Uint64
+	ipNet   *net.IPNet
+	mu      sync.RWMutex
+}
+
+func NewSubnetPool(ipNet *net.IPNet, size int) *SubnetPool {
+	if size <= 0 {
+		size = 256
+	}
+	pool := &SubnetPool{
+		ips:   make([]net.IP, size),
+		ipNet: ipNet,
+	}
+	for i := 0; i < size; i++ {
+		pool.ips[i] = PickRandomIPv6(ipNet)
+	}
+	return pool
+}
+
+func (p *SubnetPool) Next() net.IP {
+	if p == nil || len(p.ips) == 0 {
+		return PickRandomIPv6(p.ipNet)
+	}
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	idx := p.counter.Add(1) % uint64(len(p.ips))
+	return p.ips[idx]
+}
+
+// RefreshBatch gently replaces a small subset of IPs in the pool to keep them rotating over time
+func (p *SubnetPool) RefreshBatch(count int) {
+	if p == nil || p.ipNet == nil || len(p.ips) == 0 {
+		return
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	for i := 0; i < count; i++ {
+		var b [2]byte
+		_, _ = rand.Read(b[:])
+		idx := int(binary.BigEndian.Uint16(b[:])) % len(p.ips)
+		p.ips[idx] = PickRandomIPv6(p.ipNet)
+	}
+}
+
+// SessionManager manages sticky sessions and IPv6 rotation for a port listener
 type SessionManager struct {
 	sessions map[string]*SessionIPEntry
+	pool     *SubnetPool
+	ipNet    *net.IPNet
 	mu       sync.RWMutex
 	stopChan chan struct{}
 }
 
-// NewSessionManager creates a session manager with background cleanup
-func NewSessionManager() *SessionManager {
+// NewSessionManager creates a session manager with warm pool and background cleanup
+func NewSessionManager(ipNet *net.IPNet) *SessionManager {
 	sm := &SessionManager{
 		sessions: make(map[string]*SessionIPEntry),
+		pool:     NewSubnetPool(ipNet, 256),
+		ipNet:    ipNet,
 		stopChan: make(chan struct{}),
 	}
 	go sm.cleanupLoop()
@@ -50,6 +106,7 @@ func (sm *SessionManager) cleanupLoop() {
 		case <-sm.stopChan:
 			return
 		case now := <-ticker.C:
+			// 1. Clean expired sticky sessions
 			sm.mu.Lock()
 			for k, v := range sm.sessions {
 				if now.After(v.ExpiresAt) {
@@ -57,6 +114,11 @@ func (sm *SessionManager) cleanupLoop() {
 				}
 			}
 			sm.mu.Unlock()
+
+			// 2. Gently rotate a batch of pool IPs so addresses evolve over time
+			if sm.pool != nil {
+				sm.pool.RefreshBatch(16)
+			}
 		}
 	}
 }
@@ -81,6 +143,9 @@ func (sm *SessionManager) PickIPv6(sessionKey string, acc *store.ProxyAccount, i
 				return ip
 			}
 		}
+		if sm.pool != nil {
+			return sm.pool.Next()
+		}
 		return PickRandomIPv6(ipNet)
 
 	case store.RotationSticky:
@@ -103,8 +168,14 @@ func (sm *SessionManager) PickIPv6(sessionKey string, acc *store.ProxyAccount, i
 			return entry.IP
 		}
 
-		// Expired or new session -> allocate fresh random IPv6
-		newIP := PickRandomIPv6(ipNet)
+		// Expired or new session -> allocate fresh IPv6 from pool
+		var newIP net.IP
+		if sm.pool != nil {
+			newIP = sm.pool.Next()
+		} else {
+			newIP = PickRandomIPv6(ipNet)
+		}
+
 		sm.mu.Lock()
 		sm.sessions[key] = &SessionIPEntry{
 			IP:        newIP,
@@ -114,6 +185,9 @@ func (sm *SessionManager) PickIPv6(sessionKey string, acc *store.ProxyAccount, i
 		return newIP
 
 	default: // RotationPerRequest
+		if sm.pool != nil {
+			return sm.pool.Next()
+		}
 		return PickRandomIPv6(ipNet)
 	}
 }

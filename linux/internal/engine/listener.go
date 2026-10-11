@@ -2,7 +2,6 @@ package engine
 
 import (
 	"bufio"
-	"bytes"
 	"context"
 	"encoding/base64"
 	"fmt"
@@ -57,7 +56,7 @@ func NewPortListener(acc *store.ProxyAccount, ipNet *net.IPNet) (*PortListener, 
 		account:  acc,
 		listener: ln,
 		ipNet:    ipNet,
-		sessions: NewSessionManager(),
+		sessions: NewSessionManager(ipNet),
 		stopChan: make(chan struct{}),
 	}
 
@@ -183,44 +182,76 @@ func (pl *PortListener) handleHTTP(clientConn net.Conn, br *bufio.Reader) {
 	// Pick rotated IPv6 according to session and rotation policy
 	outIP := pl.sessions.PickIPv6(sessionKey, pl.account, pl.ipNet)
 
-	targetHost := req.URL.Host
-	if targetHost == "" {
-		targetHost = req.Host
-	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
-	defer cancel()
-
-	destConn, _, err := DialOutbound(ctx, targetHost, outIP)
-	if err != nil {
-		_, _ = clientConn.Write([]byte("HTTP/1.1 502 Bad Gateway\r\n\r\n"))
-		return
-	}
-	defer destConn.Close()
-
-	countedClient := NewCountingConn(clientConn, pl.account)
-	countedDest := NewCountingConn(destConn, pl.account)
-
 	if req.Method == http.MethodConnect {
 		// HTTPS Tunnel: Respond with 200 Connection Established and begin bidirectional streaming
+		targetHost := req.URL.Host
+		if targetHost == "" {
+			targetHost = req.Host
+		}
+
+		ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+		defer cancel()
+
+		destConn, _, err := DialOutbound(ctx, targetHost, outIP)
+		if err != nil {
+			_, _ = clientConn.Write([]byte("HTTP/1.1 502 Bad Gateway\r\n\r\n"))
+			return
+		}
+		defer destConn.Close()
+
+		countedClient := NewCountingConn(clientConn, pl.account)
+		countedDest := NewCountingConn(destConn, pl.account)
+
 		_, err = countedClient.Write([]byte("HTTP/1.1 200 Connection Established\r\n\r\n"))
 		if err != nil {
 			return
 		}
 		relayBidirectional(countedClient, countedDest)
 	} else {
-		// HTTP Plain Forwarding
-		req.Header.Del("Proxy-Authorization")
-		req.Header.Del("Proxy-Connection")
-
-		var buf bytes.Buffer
-		_ = req.Write(&buf)
-		_, err = countedDest.Write(buf.Bytes())
-		if err != nil {
-			return
-		}
-		relayBidirectional(countedClient, countedDest)
+		// Plain HTTP: Use proper HTTP RoundTrip to stream response without socket hang
+		pl.forwardPlainHTTP(clientConn, req, outIP)
 	}
+}
+
+func (pl *PortListener) forwardPlainHTTP(clientConn net.Conn, req *http.Request, outIP net.IP) {
+	targetHost := req.URL.Host
+	if targetHost == "" {
+		targetHost = req.Host
+	}
+	if !strings.Contains(targetHost, ":") {
+		if req.URL.Scheme == "https" {
+			targetHost += ":443"
+		} else {
+			targetHost += ":80"
+		}
+	}
+
+	transport := &http.Transport{
+		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
+			conn, _, err := DialOutbound(ctx, addr, outIP)
+			return conn, err
+		},
+		DisableKeepAlives: true,
+	}
+
+	outReq, err := http.NewRequestWithContext(req.Context(), req.Method, req.URL.String(), req.Body)
+	if err != nil {
+		_, _ = clientConn.Write([]byte("HTTP/1.1 400 Bad Request\r\n\r\n"))
+		return
+	}
+	outReq.Header = req.Header.Clone()
+	outReq.Header.Del("Proxy-Authorization")
+	outReq.Header.Del("Proxy-Connection")
+
+	resp, err := transport.RoundTrip(outReq)
+	if err != nil {
+		_, _ = clientConn.Write([]byte("HTTP/1.1 502 Bad Gateway\r\n\r\n"))
+		return
+	}
+	defer resp.Body.Close()
+
+	countedClient := NewCountingConn(clientConn, pl.account)
+	_ = resp.Write(countedClient)
 }
 
 // ----------------------------------------------------------------------
