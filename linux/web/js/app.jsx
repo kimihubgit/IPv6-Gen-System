@@ -351,9 +351,113 @@ function BandwidthChart({ totalBytes, isPaused }) {
 }
 
 // ----------------------------------------------------------------------
+// Login Screen Component
+// ----------------------------------------------------------------------
+function LoginView({ onLoginSuccess }) {
+  const [username, setUsername] = useState("admin");
+  const [password, setPassword] = useState("");
+  const [loading, setLoading] = useState(false);
+  const [errorMsg, setErrorMsg] = useState("");
+
+  const handleLogin = async (e) => {
+    e.preventDefault();
+    setLoading(true);
+    setErrorMsg("");
+    try {
+      const res = await fetch("/api/login", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ username: username.trim(), password: password.trim() }),
+      });
+      const data = await res.json();
+      if (res.ok) {
+        onLoginSuccess();
+      } else {
+        setErrorMsg(data.error || "Tài khoản hoặc mật khẩu không chính xác!");
+      }
+    } catch {
+      setErrorMsg("Không thể kết nối đến máy chủ. Vui lòng thử lại!");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <div className="min-h-screen w-screen flex items-center justify-center p-4 bg-slate-950 text-slate-100 relative overflow-hidden">
+      {/* Background subtle radial glow */}
+      <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[500px] h-[500px] bg-indigo-600/10 rounded-full blur-3xl pointer-events-none"></div>
+
+      <div className="relative z-10 bg-slate-900/90 border border-slate-800 rounded-2xl max-w-sm w-full p-8 shadow-2xl backdrop-blur-md">
+        {/* Logo & Header */}
+        <div className="flex flex-col items-center text-center mb-6">
+          <div className="w-12 h-12 rounded-xl bg-indigo-600/20 border border-indigo-500/30 flex items-center justify-center text-indigo-400 mb-3 shadow-inner">
+            <Icon name="server" className="w-6 h-6" />
+          </div>
+          <h2 className="text-lg font-bold text-slate-100">IPv6 Proxy Hub</h2>
+          <p className="text-xs text-slate-400 mt-1">Đăng nhập trang quản trị máy chủ Proxy</p>
+        </div>
+
+        {errorMsg && (
+          <div className="mb-4 p-3 rounded-lg bg-rose-950/50 border border-rose-500/40 text-rose-300 text-xs flex items-center gap-2 animate-fade-in">
+            <Icon name="x" className="w-4 h-4 text-rose-400 shrink-0" />
+            <span>{errorMsg}</span>
+          </div>
+        )}
+
+        <form onSubmit={handleLogin} className="space-y-4 text-xs">
+          <div>
+            <label className="block text-slate-300 font-medium mb-1.5">Tài Khoản</label>
+            <input
+              type="text"
+              value={username}
+              onChange={(e) => setUsername(e.target.value)}
+              required
+              className="w-full bg-slate-950 border border-slate-800 rounded-lg px-3.5 py-2.5 text-slate-200 placeholder-slate-500 focus:outline-none focus:border-indigo-500 transition-colors"
+            />
+          </div>
+
+          <div>
+            <label className="block text-slate-300 font-medium mb-1.5">Mật Khẩu</label>
+            <input
+              type="password"
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+              placeholder="Nhập mật khẩu admin..."
+              required
+              autoFocus
+              className="w-full bg-slate-950 border border-slate-800 rounded-lg px-3.5 py-2.5 text-slate-200 placeholder-slate-500 focus:outline-none focus:border-indigo-500 transition-colors"
+            />
+          </div>
+
+          <button
+            type="submit"
+            disabled={loading}
+            className="w-full mt-2 py-2.5 px-4 rounded-lg font-semibold text-white bg-indigo-600 hover:bg-indigo-500 transition-colors shadow-md disabled:opacity-50 flex items-center justify-center gap-2 cursor-pointer"
+          >
+            {loading ? (
+              <>
+                <Icon name="refresh" className="w-4 h-4 animate-spin text-white" />
+                <span>Đang xác thực...</span>
+              </>
+            ) : (
+              <span>Đăng Nhập</span>
+            )}
+          </button>
+        </form>
+
+        <div className="mt-6 text-center text-[11px] text-slate-500">
+          Mặc định: <code className="text-slate-400">admin</code> / <code className="text-slate-400">admin123</code>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ----------------------------------------------------------------------
 // Main Application Component
 // ----------------------------------------------------------------------
 function App() {
+  const [isLoggedIn, setIsLoggedIn] = useState(true);
   const [proxies, setProxies] = useState([]);
   const [stats, setStats] = useState(null);
   const [activeTab, setActiveTab] = useState("proxies"); // "proxies" | "stats" | "guide"
@@ -395,10 +499,11 @@ function App() {
       ]);
 
       if (resProxies.status === 401 || resStats.status === 401) {
-        window.location.reload();
+        setIsLoggedIn(false);
         return;
       }
 
+      setIsLoggedIn(true);
       if (resProxies.ok) {
         const dataP = await resProxies.json();
         setProxies(dataP);
@@ -670,6 +775,10 @@ function App() {
     showToast(`Đã tải xuống file cho ${lines.length} proxy!`);
   };
 
+  if (!isLoggedIn) {
+    return <LoginView onLoginSuccess={() => fetchData(true)} />;
+  }
+
   return (
     <div className="flex h-screen w-screen overflow-hidden bg-slate-950 text-slate-100">
       {/* Toast Notification */}
@@ -865,14 +974,17 @@ function App() {
               <span className="w-2 h-2 rounded-full bg-emerald-400"></span>
               <span className="text-slate-300 font-medium">admin</span>
             </div>
-            <a
-              href="/api/logout"
+            <button
+              onClick={async () => {
+                await fetch("/api/logout");
+                setIsLoggedIn(false);
+              }}
               title="Đăng xuất"
-              className="text-slate-400 hover:text-rose-400 transition-colors flex items-center gap-1"
+              className="text-slate-400 hover:text-rose-400 transition-colors flex items-center gap-1 cursor-pointer"
             >
               <Icon name="logout" className="w-3.5 h-3.5" />
               <span className="text-[11px]">Thoát</span>
-            </a>
+            </button>
           </div>
         </div>
       </aside>

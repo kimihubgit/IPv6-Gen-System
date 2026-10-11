@@ -71,8 +71,13 @@ func (ws *WebServer) Start() error {
 	// Static Theme & UI routes
 	webDir := "web"
 	if fi, err := os.Stat(webDir); err == nil && fi.IsDir() {
-		log.Println("📁 Đang phục vụ theme/giao diện trực tiếp từ thư mục đĩa: ./web")
-		mux.Handle("/", http.FileServer(http.Dir(webDir)))
+		fs := http.FileServer(http.Dir(webDir))
+		mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
+			w.Header().Set("Pragma", "no-cache")
+			w.Header().Set("Expires", "0")
+			fs.ServeHTTP(w, r)
+		})
 	} else {
 		log.Println("⚠️ Thư mục ./web không tồn tại trên đĩa")
 	}
