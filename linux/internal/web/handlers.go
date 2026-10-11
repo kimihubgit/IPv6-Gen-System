@@ -192,6 +192,7 @@ func (ws *WebServer) handleProxies(w http.ResponseWriter, r *http.Request) {
 			Port         int     `json:"port"`
 			Username     string  `json:"username"`
 			Password     string  `json:"password"`
+			Proto        string  `json:"proto"`
 			MaxGB        float64 `json:"max_gb"`
 			ExpireDays   int     `json:"expire_days"`
 			RotationType string  `json:"rotation_type"`
@@ -229,8 +230,13 @@ func (ws *WebServer) handleProxies(w http.ResponseWriter, r *http.Request) {
 		}
 
 		stickySec := req.StickySec
-		if stickySec <= 0 {
-			stickySec = 10
+		if stickySec < 1 {
+			stickySec = 1
+		}
+
+		proto := strings.ToLower(strings.TrimSpace(req.Proto))
+		if proto != "http" && proto != "socks5" && proto != "both" {
+			proto = "both"
 		}
 
 		acc := &store.ProxyAccount{
@@ -239,7 +245,7 @@ func (ws *WebServer) handleProxies(w http.ResponseWriter, r *http.Request) {
 			Port:         req.Port,
 			Username:     req.Username,
 			Password:     req.Password,
-			Proto:        "both",
+			Proto:        proto,
 			MaxBytes:     maxBytes,
 			BytesUsed:    0,
 			ExpiresAt:    expiresAt,
@@ -280,6 +286,7 @@ func (ws *WebServer) handleProxiesBulk(w http.ResponseWriter, r *http.Request) {
 		NamePrefix   string  `json:"name_prefix"`
 		Username     string  `json:"username"`
 		Password     string  `json:"password"`
+		Proto        string  `json:"proto"`
 		MaxGB        float64 `json:"max_gb"`
 		ExpireDays   int     `json:"expire_days"`
 		RotationType string  `json:"rotation_type"`
@@ -312,8 +319,13 @@ func (ws *WebServer) handleProxiesBulk(w http.ResponseWriter, r *http.Request) {
 	}
 
 	stickySec := req.StickySec
-	if stickySec <= 0 {
-		stickySec = 10
+	if stickySec < 1 {
+		stickySec = 1
+	}
+
+	proto := strings.ToLower(strings.TrimSpace(req.Proto))
+	if proto != "http" && proto != "socks5" && proto != "both" {
+		proto = "both"
 	}
 
 	var maxBytes int64 = 0
@@ -354,7 +366,7 @@ func (ws *WebServer) handleProxiesBulk(w http.ResponseWriter, r *http.Request) {
 			Port:         port,
 			Username:     uname,
 			Password:     pass,
-			Proto:        "both",
+			Proto:        proto,
 			MaxBytes:     maxBytes,
 			BytesUsed:    0,
 			ExpiresAt:    expiresAt,
@@ -415,6 +427,7 @@ func (ws *WebServer) handleProxyItem(w http.ResponseWriter, r *http.Request) {
 			Port         int      `json:"port"`
 			Username     string   `json:"username"`
 			Password     string   `json:"password"`
+			Proto        string   `json:"proto"`
 			MaxGB        *float64 `json:"max_gb"`
 			ExpireDays   *int     `json:"expire_days"`
 			AddDays      int      `json:"add_days"`
@@ -437,6 +450,12 @@ func (ws *WebServer) handleProxyItem(w http.ResponseWriter, r *http.Request) {
 		}
 		if req.Password != "" {
 			acc.Password = req.Password
+		}
+		if req.Proto != "" {
+			p := strings.ToLower(strings.TrimSpace(req.Proto))
+			if p == "http" || p == "socks5" || p == "both" {
+				acc.Proto = p
+			}
 		}
 		if req.MaxGB != nil {
 			if *req.MaxGB <= 0 {

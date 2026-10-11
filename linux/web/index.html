@@ -501,6 +501,16 @@ print("IPv6 của luồng:", response.json()["ip"])</div>
           </div>
 
           <div class="form-field">
+            <label>Loại Proxy (Giao thức) *</label>
+            <select id="p-proto" class="form-input">
+              <option value="both">⚡ Đa năng (HTTP, HTTPS & SOCKS5 - Tự nhận diện)</option>
+              <option value="http">🌐 Chỉ HTTP / HTTPS</option>
+              <option value="socks5">🧦 Chỉ SOCKS5</option>
+            </select>
+            <span class="form-tip">Chế độ Đa năng cho phép cùng 1 cổng chạy được cả HTTP lẫn SOCKS5.</span>
+          </div>
+
+          <div class="form-field">
             <label>Chế Độ Xoay IPv6 *</label>
             <select id="p-rot-type" class="form-input" onchange="toggleStickyInput(this.value, 'p-sticky-group')">
               <option value="sticky">Xoay Giữ IP Theo Thời Gian (Sticky Seconds)</option>
@@ -559,6 +569,15 @@ print("IPv6 của luồng:", response.json()["ip"])</div>
               <label>Mật Khẩu Chung</label>
               <input type="text" id="b-pass" class="form-input" placeholder="Để trống = Random riêng">
             </div>
+          </div>
+
+          <div class="form-field">
+            <label>Loại Proxy (Giao thức) *</label>
+            <select id="b-proto" class="form-input">
+              <option value="both">⚡ Đa năng (HTTP, HTTPS & SOCKS5 - Tự nhận diện)</option>
+              <option value="http">🌐 Chỉ HTTP / HTTPS</option>
+              <option value="socks5">🧦 Chỉ SOCKS5</option>
+            </select>
           </div>
 
           <div class="form-field">

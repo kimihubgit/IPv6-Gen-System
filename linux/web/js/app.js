@@ -286,11 +286,20 @@ function renderProxyRows(list) {
     const expireText = p.expires_at ? new Date(p.expires_at).toLocaleDateString('vi-VN') : 'Vĩnh viễn';
     const authText = p.username ? `<strong>${p.username}</strong> : ${p.password}` : '<span style="color:var(--text-muted);">Không mật khẩu</span>';
 
+    let protoBadge = '';
+    if (p.proto === 'http') {
+      protoBadge = `<span class="badge-pill primary">HTTP(S)</span>`;
+    } else if (p.proto === 'socks5') {
+      protoBadge = `<span class="badge-pill warning">SOCKS5</span>`;
+    } else {
+      protoBadge = `<span class="badge-pill success">HTTP & SOCKS5</span>`;
+    }
+
     return `
       <tr>
         <td style="color:var(--text-muted); font-size:0.75rem;">${idx + 1}</td>
         <td><span class="port-tag">:${p.port}</span></td>
-        <td><span class="badge-pill primary">HTTP/SOCKS5</span></td>
+        <td>${protoBadge}</td>
         <td><div class="auth-info">${authText}</div></td>
         <td>${rotBadge}</td>
         <td><strong style="color:#fff;">${formatBytes(p.bytes_used)}</strong><span style="color:var(--text-muted); font-size:0.75rem;">${maxGBText}</span></td>
@@ -359,6 +368,7 @@ function openCreateModal() {
   document.getElementById('p-port').disabled = false;
   document.getElementById('p-user').value = '';
   document.getElementById('p-pass').value = '';
+  document.getElementById('p-proto').value = 'both';
   document.getElementById('p-days').value = '30';
   document.getElementById('p-rot-type').value = 'sticky';
   document.getElementById('p-sticky-sec').value = '10';
@@ -376,6 +386,7 @@ function openEditModal(id) {
   document.getElementById('p-port').disabled = false;
   document.getElementById('p-user').value = p.username || '';
   document.getElementById('p-pass').value = p.password || '';
+  document.getElementById('p-proto').value = p.proto || 'both';
   document.getElementById('p-days').value = '0';
   document.getElementById('p-rot-type').value = p.rotation_type || 'sticky';
   document.getElementById('p-sticky-sec').value = p.sticky_sec || 10;
@@ -390,6 +401,7 @@ async function saveProxy(e) {
   const port = parseInt(document.getElementById('p-port').value);
   const user = document.getElementById('p-user').value.trim();
   const pass = document.getElementById('p-pass').value.trim();
+  const proto = document.getElementById('p-proto').value;
   const rotType = document.getElementById('p-rot-type').value;
   const stickySec = parseInt(document.getElementById('p-sticky-sec').value) || 10;
   const maxGB = parseFloat(document.getElementById('p-maxgb').value) || 0;
@@ -399,6 +411,7 @@ async function saveProxy(e) {
     port: port,
     username: user,
     password: pass,
+    proto: proto,
     rotation_type: rotType,
     sticky_sec: stickySec,
     max_gb: maxGB,
@@ -428,6 +441,7 @@ async function saveProxy(e) {
 
 // Bulk Generation
 function openBulkModal() {
+  document.getElementById('b-proto').value = 'both';
   openModal('modal-bulk');
 }
 
@@ -437,6 +451,7 @@ async function submitBulkProxies(e) {
   const count = parseInt(document.getElementById('b-count').value);
   const prefix = document.getElementById('b-prefix').value.trim();
   const pass = document.getElementById('b-pass').value.trim();
+  const proto = document.getElementById('b-proto').value;
   const rotType = document.getElementById('b-rot-type').value;
   const stickySec = parseInt(document.getElementById('b-sticky-sec').value) || 10;
   const days = parseInt(document.getElementById('b-days').value) || 30;
@@ -447,6 +462,7 @@ async function submitBulkProxies(e) {
     count: count,
     username_prefix: prefix,
     password: pass,
+    proto: proto,
     rotation_type: rotType,
     sticky_sec: stickySec,
     expire_days: days,

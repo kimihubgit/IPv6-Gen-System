@@ -133,8 +133,18 @@ func (pl *PortListener) handleConn(clientConn net.Conn) {
 
 	// 0x05 -> SOCKS5 Protocol
 	if firstByte[0] == 0x05 {
+		if pl.account.Proto == "http" {
+			log.Printf("⛔ Cổng %d cấu hình Chỉ HTTP, từ chối kết nối SOCKS5", pl.account.Port)
+			_, _ = clientConn.Write([]byte{0x05, 0xFF})
+			return
+		}
 		pl.handleSOCKS5(wrappedClient, bufReader)
 	} else {
+		if pl.account.Proto == "socks5" {
+			log.Printf("⛔ Cổng %d cấu hình Chỉ SOCKS5, từ chối kết nối HTTP", pl.account.Port)
+			_, _ = clientConn.Write([]byte("HTTP/1.1 400 Bad Request (Port configured as SOCKS5 only)\r\n\r\n"))
+			return
+		}
 		// HTTP / HTTPS Proxy Protocol
 		pl.handleHTTP(wrappedClient, bufReader)
 	}
