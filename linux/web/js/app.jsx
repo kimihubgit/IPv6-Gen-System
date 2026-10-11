@@ -671,10 +671,39 @@ function App() {
     }
   };
 
-  // Quick Copy
+  // Quick Copy (Supports both HTTPS and plain HTTP via textarea fallback)
   const copyToClipboard = (text, msg = "Đã sao chép!") => {
-    navigator.clipboard.writeText(text);
-    showToast(msg);
+    if (navigator.clipboard && window.isSecureContext) {
+      navigator.clipboard.writeText(text).then(() => {
+        showToast(msg);
+      }).catch(() => {
+        fallbackCopy(text, msg);
+      });
+    } else {
+      fallbackCopy(text, msg);
+    }
+  };
+
+  const fallbackCopy = (text, msg) => {
+    try {
+      const textArea = document.createElement("textarea");
+      textArea.value = text;
+      textArea.style.position = "fixed";
+      textArea.style.left = "-999999px";
+      textArea.style.top = "-999999px";
+      document.body.appendChild(textArea);
+      textArea.focus();
+      textArea.select();
+      const ok = document.execCommand("copy");
+      document.body.removeChild(textArea);
+      if (ok) {
+        showToast(msg);
+      } else {
+        prompt("Sao chép thủ công:", text);
+      }
+    } catch {
+      prompt("Sao chép thủ công:", text);
+    }
   };
 
   // Export File
@@ -796,8 +825,7 @@ function App() {
     const lines = selectedProxies.map((p) =>
       p.username ? `${host}:${p.port}:${p.username}:${p.password}` : `${host}:${p.port}`
     );
-    navigator.clipboard.writeText(lines.join("\n"));
-    showToast(`Đã sao chép chuỗi kết nối ${lines.length} proxy!`);
+    copyToClipboard(lines.join("\n"), `Đã sao chép chuỗi kết nối ${lines.length} proxy!`);
   };
 
   const handleBatchExport = () => {
