@@ -155,8 +155,8 @@ func (sm *SessionManager) PickIPv6(sessionKey string, acc *store.ProxyAccount, i
 		}
 
 		sec := acc.StickySec
-		if sec <= 0 {
-			sec = 10
+		if sec < 1 {
+			sec = 1
 		}
 
 		sm.mu.RLock()

@@ -511,8 +511,8 @@ print("IPv6 của luồng:", response.json()["ip"])</div>
 
           <div class="form-field" id="p-sticky-group">
             <label>Thời Gian Giữ 1 IP (Giây) *</label>
-            <input type="number" id="p-sticky-sec" class="form-input" value="10" min="2" max="86400">
-            <span class="form-tip">Ví dụ: Điền <strong>5</strong>, <strong>10</strong> hoặc <strong>30</strong> giây. Hết thời gian này lượt gọi tiếp theo sẽ tự nhảy sang IPv6 mới.</span>
+            <input type="number" id="p-sticky-sec" class="form-input" value="10" min="1" max="86400">
+            <span class="form-tip">Ví dụ: Điền <strong>1</strong> giây (xoay cực nhanh mỗi giây 1 IP), <strong>5</strong>, <strong>10</strong> hoặc <strong>30</strong> giây. Hết thời gian này lượt gọi tiếp theo sẽ tự nhảy sang IPv6 mới.</span>
           </div>
 
           <div class="form-field">
@@ -572,8 +572,8 @@ print("IPv6 của luồng:", response.json()["ip"])</div>
 
           <div class="form-field" id="b-sticky-group">
             <label>Thời Gian Giữ IP (Giây) *</label>
-            <input type="number" id="b-sticky-sec" class="form-input" value="10" min="2" max="86400">
-            <span class="form-tip">Mỗi cổng trong danh sách sẽ có 1 IP riêng biệt và tự đổi IP sau đúng số giây này!</span>
+            <input type="number" id="b-sticky-sec" class="form-input" value="10" min="1" max="86400">
+            <span class="form-tip">Mỗi cổng trong danh sách sẽ có 1 IP riêng biệt và tự đổi IP sau đúng số giây này (hỗ trợ từ 1 giây trở lên)!</span>
           </div>
 
           <div class="form-row">

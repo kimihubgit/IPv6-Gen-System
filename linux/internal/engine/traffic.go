@@ -35,3 +35,11 @@ func (c *CountingConn) Write(b []byte) (n int, err error) {
 	}
 	return n, err
 }
+
+// CloseWrite delegates half-close to the underlying connection
+func (c *CountingConn) CloseWrite() error {
+	if cw, ok := c.Conn.(interface{ CloseWrite() error }); ok {
+		return cw.CloseWrite()
+	}
+	return nil
+}

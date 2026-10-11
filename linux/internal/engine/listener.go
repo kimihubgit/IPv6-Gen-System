@@ -34,6 +34,13 @@ func (b *BufferedConn) Read(p []byte) (int, error) {
 	return b.r.Read(p)
 }
 
+func (b *BufferedConn) CloseWrite() error {
+	if cw, ok := b.Conn.(interface{ CloseWrite() error }); ok {
+		return cw.CloseWrite()
+	}
+	return nil
+}
+
 // PortListener listens on a TCP port and handles HTTP/SOCKS5 proxy connections
 type PortListener struct {
 	account  *store.ProxyAccount
