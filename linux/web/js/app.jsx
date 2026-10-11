@@ -725,6 +725,48 @@ function App() {
     }
   };
 
+  const handleBatchResetTraffic = async () => {
+    if (selectedIds.length === 0) return;
+    if (!confirm(`Reset dung lượng đã dùng về 0 GB cho ${selectedIds.length} proxy đã chọn?`)) return;
+    try {
+      const res = await fetch("/api/proxies/batch", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "reset_traffic", ids: selectedIds }),
+      });
+      const data = await res.json();
+      if (res.ok) {
+        showToast(data.message || `Đã reset dung lượng cho ${selectedIds.length} proxy`);
+        fetchData(false);
+      } else {
+        showToast(data.error || "Thao tác thất bại", "error");
+      }
+    } catch {
+      showToast("Lỗi kết nối", "error");
+    }
+  };
+
+  const handleBatchAddDays = async (days = 30) => {
+    if (selectedIds.length === 0) return;
+    if (!confirm(`Gia hạn thêm +${days} ngày cho ${selectedIds.length} proxy đã chọn?`)) return;
+    try {
+      const res = await fetch("/api/proxies/batch", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "add_days", ids: selectedIds, add_days: days }),
+      });
+      const data = await res.json();
+      if (res.ok) {
+        showToast(data.message || `Đã gia hạn +${days} ngày cho ${selectedIds.length} proxy`);
+        fetchData(false);
+      } else {
+        showToast(data.error || "Thao tác thất bại", "error");
+      }
+    } catch {
+      showToast("Lỗi kết nối", "error");
+    }
+  };
+
   const handleBatchDelete = async () => {
     if (selectedIds.length === 0) return;
     if (!confirm(`Bạn có chắc muốn xóa vĩnh viễn ${selectedIds.length} proxy đã chọn?`)) return;
@@ -1219,7 +1261,7 @@ function App() {
                   {/* Enable selected */}
                   <button
                     onClick={() => handleBatchSetEnabled(true)}
-                    className="px-2.5 py-1.5 rounded-lg text-xs font-medium bg-emerald-950/60 hover:bg-emerald-900/70 border border-emerald-500/40 text-emerald-300 flex items-center gap-1 transition-colors"
+                    className="px-2.5 py-1.5 rounded-lg text-xs font-medium bg-emerald-950/60 hover:bg-emerald-900/70 border border-emerald-500/40 text-emerald-300 flex items-center gap-1 transition-colors cursor-pointer"
                   >
                     <Icon name="check" className="w-3.5 h-3.5" />
                     <span>Bật</span>
@@ -1228,10 +1270,30 @@ function App() {
                   {/* Disable selected */}
                   <button
                     onClick={() => handleBatchSetEnabled(false)}
-                    className="px-2.5 py-1.5 rounded-lg text-xs font-medium bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-300 flex items-center gap-1 transition-colors"
+                    className="px-2.5 py-1.5 rounded-lg text-xs font-medium bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-300 flex items-center gap-1 transition-colors cursor-pointer"
                   >
                     <Icon name="x" className="w-3.5 h-3.5" />
                     <span>Tắt</span>
+                  </button>
+
+                  {/* Reset Traffic */}
+                  <button
+                    onClick={handleBatchResetTraffic}
+                    title="Reset lưu lượng đã dùng về 0 GB cho tất cả proxy đã chọn"
+                    className="px-2.5 py-1.5 rounded-lg text-xs font-medium bg-amber-950/60 hover:bg-amber-900/70 border border-amber-500/40 text-amber-300 flex items-center gap-1 transition-colors cursor-pointer"
+                  >
+                    <Icon name="refresh" className="w-3.5 h-3.5" />
+                    <span>Reset GB</span>
+                  </button>
+
+                  {/* Add 30 Days */}
+                  <button
+                    onClick={() => handleBatchAddDays(30)}
+                    title="Gia hạn thêm +30 ngày cho tất cả proxy đã chọn"
+                    className="px-2.5 py-1.5 rounded-lg text-xs font-medium bg-indigo-950/60 hover:bg-indigo-900/70 border border-indigo-500/40 text-indigo-300 flex items-center gap-1 transition-colors cursor-pointer"
+                  >
+                    <Icon name="calendar" className="w-3.5 h-3.5" />
+                    <span>+30 Ngày</span>
                   </button>
 
                   {/* Copy selected */}
@@ -1394,13 +1456,31 @@ function App() {
 
                             {/* Traffic */}
                             <td className="py-3 px-3 font-mono">
-                              <span className="text-slate-200">{formatBytes(p.bytes_used)}</span>
-                              <span className="text-slate-500 text-[11px]">{maxText}</span>
+                              <div className="flex items-center gap-1.5">
+                                <span className={p.max_bytes > 0 && p.bytes_used >= p.max_bytes ? "text-rose-400 font-bold" : "text-slate-200"}>
+                                  {formatBytes(p.bytes_used)}
+                                </span>
+                                <span className="text-slate-500 text-[11px]">{maxText}</span>
+                              </div>
+                              {p.max_bytes > 0 && p.bytes_used >= p.max_bytes && (
+                                <span className="inline-block mt-0.5 px-1.5 py-0.2 rounded text-[9px] font-semibold bg-rose-500/20 text-rose-300 border border-rose-500/30">
+                                  Hết dung lượng
+                                </span>
+                              )}
                             </td>
 
                             {/* Expiry */}
-                            <td className="py-3 px-3 text-slate-400">
-                              {expDate}
+                            <td className="py-3 px-3">
+                              <span className={p.expires_at && new Date() > new Date(p.expires_at) ? "text-rose-400 font-bold" : "text-slate-400"}>
+                                {expDate}
+                              </span>
+                              {p.expires_at && new Date() > new Date(p.expires_at) && (
+                                <div className="mt-0.5">
+                                  <span className="px-1.5 py-0.2 rounded text-[9px] font-semibold bg-rose-500/20 text-rose-300 border border-rose-500/30">
+                                    Hết hạn
+                                  </span>
+                                </div>
+                              )}
                             </td>
 
                             {/* Enable/Disable Toggle */}
@@ -1416,6 +1496,25 @@ function App() {
                             {/* Actions */}
                             <td className="py-3 px-3 text-right">
                               <div className="flex items-center justify-end gap-1">
+                                <button
+                                  onClick={async () => {
+                                    if (confirm(`Reset dung lượng đã dùng của proxy :${p.port} về 0 GB?`)) {
+                                      try {
+                                        const res = await fetch(`/api/proxies/${p.id}/reset`, { method: "POST" });
+                                        if (res.ok) {
+                                          showToast(`Đã reset dung lượng :${p.port} về 0 GB`);
+                                          fetchData(false);
+                                        }
+                                      } catch {
+                                        showToast("Lỗi kết nối", "error");
+                                      }
+                                    }
+                                  }}
+                                  title="Gia hạn nhanh: Reset dung lượng đã dùng về 0 GB"
+                                  className="p-1.5 rounded text-amber-400/80 hover:text-amber-300 hover:bg-slate-800 transition-colors cursor-pointer"
+                                >
+                                  <Icon name="refresh" className="w-3.5 h-3.5" />
+                                </button>
                                 <button
                                   onClick={() => {
                                     const host = stats?.public_ip || "103.199.11.9";
@@ -1436,7 +1535,7 @@ function App() {
                                 </button>
                                 <button
                                   onClick={() => setEditProxy(p)}
-                                  title="Chỉnh sửa proxy"
+                                  title="Chỉnh sửa & Gia hạn proxy"
                                   className="p-1.5 rounded text-slate-400 hover:text-slate-100 hover:bg-slate-800 transition-colors"
                                 >
                                   <Icon name="edit" className="w-3.5 h-3.5" />
@@ -1583,6 +1682,8 @@ function App() {
           folders={allFolderNames}
           onClose={() => setEditProxy(null)}
           onCreateFolder={handleCreateFolder}
+          onShowToast={showToast}
+          onRefresh={() => fetchData(false)}
           onSuccess={() => {
             setEditProxy(null);
             showToast("Cập nhật proxy thành công!");
@@ -2112,6 +2213,33 @@ function BulkProxyModal({ folders, defaultFolder = "Mặc định", suggestPort,
             )}
           </div>
 
+          {/* Limits */}
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className="block text-slate-300 font-medium mb-1">Giới Hạn Dung Lượng (GB)</label>
+              <input
+                type="number"
+                value={maxGB}
+                onChange={(e) => setMaxGB(e.target.value)}
+                min="0"
+                step="0.5"
+                placeholder="0 = Không giới hạn"
+                className="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-slate-200 focus:outline-none focus:border-indigo-500"
+              />
+            </div>
+            <div>
+              <label className="block text-slate-300 font-medium mb-1">Hạn Sử Dụng (Số ngày)</label>
+              <input
+                type="number"
+                value={days}
+                onChange={(e) => setDays(e.target.value)}
+                min="0"
+                placeholder="0 = Vĩnh viễn"
+                className="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-slate-200 focus:outline-none focus:border-indigo-500"
+              />
+            </div>
+          </div>
+
           {/* Buttons */}
           <div className="flex items-center justify-end gap-2 pt-3 border-t border-slate-800">
             <button
@@ -2137,7 +2265,7 @@ function BulkProxyModal({ folders, defaultFolder = "Mặc định", suggestPort,
 // ----------------------------------------------------------------------
 // Modal: Edit Proxy
 // ----------------------------------------------------------------------
-function EditProxyModal({ proxy, folders, onClose, onSuccess, onCreateFolder }) {
+function EditProxyModal({ proxy, folders, onClose, onSuccess, onCreateFolder, onShowToast, onRefresh }) {
   const [name, setName] = useState(proxy.name || "");
   const [group, setGroup] = useState(proxy.group || "Mặc định");
   const [customGroup, setCustomGroup] = useState("");
@@ -2146,10 +2274,35 @@ function EditProxyModal({ proxy, folders, onClose, onSuccess, onCreateFolder }) 
   const [stickySec, setStickySec] = useState(proxy.sticky_sec || 10);
   const [user, setUser] = useState(proxy.username || "");
   const [pass, setPass] = useState(proxy.password || "");
+  const [bytesUsed, setBytesUsed] = useState(proxy.bytes_used || 0);
   const [maxGB, setMaxGB] = useState(proxy.max_bytes ? (proxy.max_bytes / 1024 / 1024 / 1024).toFixed(1) : 0);
+  const [addDays, setAddDays] = useState("");
+  const [setExpireNil, setSetExpireNil] = useState(false);
+  const [isResetting, setIsResetting] = useState(false);
+  const [isSubmitting, setIsSubmitting] = useState(false);
+
+  const handleResetTraffic = async () => {
+    setIsResetting(true);
+    try {
+      const res = await fetch(`/api/proxies/${proxy.id}/reset`, { method: "POST" });
+      const data = await res.json();
+      if (res.ok) {
+        setBytesUsed(0);
+        if (onShowToast) onShowToast(data.message || "Đã reset dung lượng về 0 GB!");
+        if (onRefresh) onRefresh();
+      } else {
+        alert(data.error || "Không thể reset dung lượng");
+      }
+    } catch {
+      alert("Lỗi kết nối máy chủ");
+    } finally {
+      setIsResetting(false);
+    }
+  };
 
   const handleSubmit = async (e) => {
     e.preventDefault();
+    setIsSubmitting(true);
     let finalGroup = group;
     if (group === "__custom__") {
       finalGroup = customGroup.trim() || "Mặc định";
@@ -2169,6 +2322,12 @@ function EditProxyModal({ proxy, folders, onClose, onSuccess, onCreateFolder }) 
       max_gb: Number(maxGB),
     };
 
+    if (setExpireNil) {
+      payload.set_expire_nil = true;
+    } else if (Number(addDays) > 0) {
+      payload.add_days = Number(addDays);
+    }
+
     try {
       const res = await fetch(`/api/proxies/${proxy.id}`, {
         method: "PUT",
@@ -2178,20 +2337,23 @@ function EditProxyModal({ proxy, folders, onClose, onSuccess, onCreateFolder }) 
       if (res.ok) {
         onSuccess();
       } else {
-        alert("Lỗi khi cập nhật proxy");
+        const data = await res.json();
+        alert(data.error || "Lỗi khi cập nhật proxy");
       }
     } catch {
       alert("Lỗi kết nối máy chủ");
+    } finally {
+      setIsSubmitting(false);
     }
   };
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm animate-fade-in">
-      <div className="bg-slate-900 border border-slate-800 rounded-xl max-w-lg w-full p-6 shadow-2xl">
+      <div className="bg-slate-900 border border-slate-800 rounded-xl max-w-lg w-full p-6 shadow-2xl max-h-[90vh] overflow-y-auto">
         <div className="flex items-center justify-between pb-3 border-b border-slate-800">
           <h3 className="text-sm font-semibold text-slate-100 flex items-center gap-2">
             <Icon name="edit" className="w-4 h-4 text-indigo-400" />
-            Chỉnh Sửa Proxy :{proxy.port}
+            Chỉnh Sửa & Gia Hạn Proxy :{proxy.port}
           </h3>
           <button onClick={onClose} className="text-slate-400 hover:text-slate-200">
             <Icon name="x" className="w-4 h-4" />
@@ -2199,6 +2361,7 @@ function EditProxyModal({ proxy, folders, onClose, onSuccess, onCreateFolder }) 
         </div>
 
         <form onSubmit={handleSubmit} className="mt-4 space-y-4 text-xs">
+          {/* Note / Customer Name */}
           <div>
             <label className="block text-slate-300 font-medium mb-1">Ghi Chú / Tên Khách Hàng (Note)</label>
             <input
@@ -2209,6 +2372,7 @@ function EditProxyModal({ proxy, folders, onClose, onSuccess, onCreateFolder }) 
             />
           </div>
 
+          {/* Folder */}
           <div>
             <label className="block text-slate-300 font-medium mb-1">Thư Mục / Nhóm</label>
             <div className="flex gap-2">
@@ -2218,7 +2382,7 @@ function EditProxyModal({ proxy, folders, onClose, onSuccess, onCreateFolder }) 
                   setGroup(e.target.value);
                   setCustomGroup("");
                 }}
-                className="bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-slate-200 flex-1"
+                className="bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-slate-200 flex-1 cursor-pointer"
               >
                 {folders.map((f) => (
                   <option key={f} value={f}>{f}</option>
@@ -2237,6 +2401,131 @@ function EditProxyModal({ proxy, folders, onClose, onSuccess, onCreateFolder }) 
             </div>
           </div>
 
+          {/* Quản Lý Dung Lượng & Gia Hạn Thời Hạn */}
+          <div className="p-3.5 rounded-xl bg-slate-950/80 border border-indigo-500/30 space-y-3">
+            <div className="flex items-center justify-between border-b border-slate-800 pb-2">
+              <span className="font-semibold text-slate-100 flex items-center gap-1.5">
+                <Icon name="database" className="w-3.5 h-3.5 text-indigo-400" />
+                Gia Hạn Dung Lượng & Thời Hạn
+              </span>
+              <span className="text-[11px] text-slate-400">
+                Đã dùng: <strong className="text-amber-400 font-mono">{formatBytes(bytesUsed)}</strong>
+              </span>
+            </div>
+
+            {/* Nút Reset Dung Lượng */}
+            <div className="flex items-center justify-between p-2.5 rounded-lg bg-slate-900 border border-slate-800">
+              <div>
+                <div className="text-[11px] font-medium text-slate-200">Reset Dung Lượng Về 0 GB</div>
+                <div className="text-[10px] text-slate-400">Khách mua thêm dung lượng hoặc cần làm mới lưu lượng</div>
+              </div>
+              <button
+                type="button"
+                disabled={isResetting || bytesUsed === 0}
+                onClick={handleResetTraffic}
+                className="px-3 py-1.5 rounded-lg font-semibold text-xs bg-amber-500/20 text-amber-300 hover:bg-amber-500/30 border border-amber-500/40 transition-colors disabled:opacity-40 disabled:cursor-not-allowed flex items-center gap-1.5 cursor-pointer shadow-sm"
+              >
+                {isResetting ? (
+                  <Icon name="refresh" className="w-3.5 h-3.5 animate-spin" />
+                ) : (
+                  <Icon name="refresh" className="w-3.5 h-3.5" />
+                )}
+                <span>Reset 0 GB</span>
+              </button>
+            </div>
+
+            {/* Hạn Mức GB */}
+            <div>
+              <div className="flex items-center justify-between mb-1.5">
+                <label className="text-slate-300 font-medium">Hạn Mức Dung Lượng (GB)</label>
+                <span className="text-[10px] text-slate-500">0 = Không giới hạn</span>
+              </div>
+              <div className="flex items-center gap-2">
+                <input
+                  type="number"
+                  value={maxGB}
+                  onChange={(e) => setMaxGB(e.target.value)}
+                  min="0"
+                  step="0.5"
+                  className="w-24 bg-slate-900 border border-slate-800 rounded-lg px-2.5 py-1.5 text-slate-200 font-mono focus:outline-none focus:border-indigo-500"
+                />
+                <div className="flex flex-wrap items-center gap-1">
+                  {[0, 5, 10, 20, 50, 100].map((gb) => (
+                    <button
+                      key={gb}
+                      type="button"
+                      onClick={() => setMaxGB(gb)}
+                      className={`px-2 py-1 rounded text-[10px] font-medium border transition-colors cursor-pointer ${
+                        Number(maxGB) === gb
+                          ? "bg-indigo-600/40 text-indigo-300 border-indigo-500"
+                          : "bg-slate-900 text-slate-400 border-slate-800 hover:text-slate-200"
+                      }`}
+                    >
+                      {gb === 0 ? "Vô hạn" : `${gb}GB`}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            </div>
+
+            {/* Gia Hạn Ngày */}
+            <div>
+              <div className="flex items-center justify-between mb-1.5">
+                <label className="text-slate-300 font-medium">Gia Hạn Thêm Ngày Sử Dụng</label>
+                <span className="text-[10px] text-slate-400">
+                  Hạn hiện tại: <strong className="text-indigo-300">{proxy.expires_at ? new Date(proxy.expires_at).toLocaleDateString("vi-VN") : "Vĩnh viễn"}</strong>
+                </span>
+              </div>
+              <div className="flex items-center gap-2">
+                <input
+                  type="number"
+                  value={addDays}
+                  onChange={(e) => {
+                    setAddDays(e.target.value);
+                    setSetExpireNil(false);
+                  }}
+                  min="0"
+                  placeholder="+ Ngày..."
+                  className="w-24 bg-slate-900 border border-slate-800 rounded-lg px-2.5 py-1.5 text-slate-200 font-mono focus:outline-none focus:border-indigo-500"
+                />
+                <div className="flex flex-wrap items-center gap-1">
+                  {[7, 30, 60, 90, 180].map((d) => (
+                    <button
+                      key={d}
+                      type="button"
+                      onClick={() => {
+                        setAddDays(d);
+                        setSetExpireNil(false);
+                      }}
+                      className={`px-2 py-1 rounded text-[10px] font-medium border transition-colors cursor-pointer ${
+                        Number(addDays) === d
+                          ? "bg-indigo-600/40 text-indigo-300 border-indigo-500"
+                          : "bg-slate-900 text-slate-400 border-slate-800 hover:text-slate-200"
+                      }`}
+                    >
+                      +{d} ngày
+                    </button>
+                  ))}
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setAddDays("");
+                      setSetExpireNil(true);
+                    }}
+                    className={`px-2 py-1 rounded text-[10px] font-medium border transition-colors cursor-pointer ${
+                      setExpireNil
+                        ? "bg-emerald-600/40 text-emerald-300 border-emerald-500"
+                        : "bg-slate-900 text-slate-400 border-slate-800 hover:text-slate-200"
+                    }`}
+                  >
+                    Vĩnh viễn
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          {/* Protocols and Rotation */}
           <div className="grid grid-cols-2 gap-3">
             <div>
               <label className="block text-slate-300 font-medium mb-1">Giao Thức</label>
@@ -2278,6 +2567,7 @@ function EditProxyModal({ proxy, folders, onClose, onSuccess, onCreateFolder }) 
             </div>
           )}
 
+          {/* Credentials */}
           <div className="grid grid-cols-2 gap-3">
             <div>
               <label className="block text-slate-300 font-medium mb-1">Username</label>
@@ -2303,15 +2593,17 @@ function EditProxyModal({ proxy, folders, onClose, onSuccess, onCreateFolder }) 
             <button
               type="button"
               onClick={onClose}
-              className="px-4 py-2 rounded-lg text-slate-400 hover:text-slate-200"
+              className="px-4 py-2 rounded-lg text-slate-400 hover:text-slate-200 cursor-pointer"
             >
               Hủy
             </button>
             <button
               type="submit"
-              className="px-5 py-2 rounded-lg font-semibold text-white bg-indigo-600 hover:bg-indigo-500 shadow-sm"
+              disabled={isSubmitting}
+              className="px-5 py-2 rounded-lg font-semibold text-white bg-indigo-600 hover:bg-indigo-500 shadow-sm disabled:opacity-50 cursor-pointer flex items-center gap-1.5"
             >
-              Lưu Thay Đổi
+              {isSubmitting && <Icon name="refresh" className="w-3.5 h-3.5 animate-spin" />}
+              <span>Lưu Thay Đổi</span>
             </button>
           </div>
         </form>

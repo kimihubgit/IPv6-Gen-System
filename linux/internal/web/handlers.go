@@ -565,10 +565,12 @@ func (ws *WebServer) handleProxiesBatch(w http.ResponseWriter, r *http.Request) 
 	}
 
 	var req struct {
-		Action  string   `json:"action"` // "set_group", "set_enabled", "delete"
+		Action  string   `json:"action"` // "set_group", "set_enabled", "delete", "reset_traffic", "add_days", "set_max_gb"
 		IDs     []string `json:"ids"`
 		Group   string   `json:"group"`
 		Enabled bool     `json:"enabled"`
+		AddDays int      `json:"add_days"`
+		MaxGB   float64  `json:"max_gb"`
 	}
 
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -619,6 +621,68 @@ func (ws *WebServer) handleProxiesBatch(w http.ResponseWriter, r *http.Request) 
 		jsonResponse(w, http.StatusOK, map[string]interface{}{
 			"status":  "ok",
 			"message": fmt.Sprintf("Đã %s %d proxy được chọn", statusText, count),
+			"count":   count,
+		})
+
+	case "reset_traffic":
+		for _, id := range req.IDs {
+			acc := ws.store.GetByID(id)
+			if acc != nil {
+				acc.BytesUsed = 0
+				count++
+			}
+		}
+		_ = ws.store.Save()
+		jsonResponse(w, http.StatusOK, map[string]interface{}{
+			"status":  "ok",
+			"message": fmt.Sprintf("Đã reset dung lượng về 0 GB cho %d proxy", count),
+			"count":   count,
+		})
+
+	case "add_days":
+		days := req.AddDays
+		if days <= 0 {
+			days = 30
+		}
+		for _, id := range req.IDs {
+			acc := ws.store.GetByID(id)
+			if acc != nil {
+				base := time.Now()
+				if acc.ExpiresAt != nil && acc.ExpiresAt.After(base) {
+					base = *acc.ExpiresAt
+				}
+				exp := base.AddDate(0, 0, days)
+				acc.ExpiresAt = &exp
+				count++
+			}
+		}
+		_ = ws.store.Save()
+		jsonResponse(w, http.StatusOK, map[string]interface{}{
+			"status":  "ok",
+			"message": fmt.Sprintf("Đã gia hạn thêm +%d ngày cho %d proxy", days, count),
+			"count":   count,
+		})
+
+	case "set_max_gb":
+		var bytesLimit int64
+		if req.MaxGB > 0 {
+			bytesLimit = int64(req.MaxGB * 1024 * 1024 * 1024)
+		}
+		for _, id := range req.IDs {
+			acc := ws.store.GetByID(id)
+			if acc != nil {
+				acc.MaxBytes = bytesLimit
+				count++
+			}
+		}
+		_ = ws.store.Save()
+		limitText := "Không giới hạn"
+		if req.MaxGB > 0 {
+			limitText = fmt.Sprintf("%.1f GB", req.MaxGB)
+		}
+		jsonResponse(w, http.StatusOK, map[string]interface{}{
+			"status":  "ok",
+			"message": fmt.Sprintf("Đã cập nhật hạn mức %s cho %d proxy", limitText, count),
 			"count":   count,
 		})
 
