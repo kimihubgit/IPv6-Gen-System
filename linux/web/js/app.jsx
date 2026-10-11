@@ -1348,14 +1348,15 @@ function App() {
                           className="w-4 h-4 rounded text-indigo-600 bg-slate-800 border-slate-700 focus:ring-indigo-500 cursor-pointer"
                         />
                       </th>
-                      <th className="py-3 px-3">Cổng (Port)</th>
                       <th className="py-3 px-3">Ghi Chú / Tên Khách</th>
                       <th className="py-3 px-3">Thư Mục</th>
+                      <th className="py-3 px-3 font-mono">Địa Chỉ (IP : Port)</th>
+                      <th className="py-3 px-3 font-mono">Tài Khoản (User : Pass)</th>
                       <th className="py-3 px-3">Giao Thức</th>
-                      <th className="py-3 px-3">Tài Khoản Xác Thực</th>
                       <th className="py-3 px-3">Chế Độ Xoay</th>
                       <th className="py-3 px-3">Dung Lượng</th>
-                      <th className="py-3 px-3">Hạn Dùng</th>
+                      <th className="py-3 px-3">Ngày Đăng Ký</th>
+                      <th className="py-3 px-3">Ngày Hết Hạn</th>
                       <th className="py-3 px-3 text-center w-16">Bật/Tắt</th>
                       <th className="py-3 px-3 text-right">Thao Tác</th>
                     </tr>
@@ -1363,14 +1364,17 @@ function App() {
                   <tbody className="divide-y divide-slate-800/50">
                     {filteredProxies.length === 0 ? (
                       <tr>
-                        <td colSpan="11" className="py-12 text-center text-slate-500 text-xs">
+                        <td colSpan="12" className="py-12 text-center text-slate-500 text-xs">
                           Không tìm thấy cổng proxy nào phù hợp
                         </td>
                       </tr>
                     ) : (
                       filteredProxies.map((p, idx) => {
                         const isSelected = selectedIds.includes(p.id);
+                        const host = stats?.public_ip || "103.199.11.9";
+                        const proxyStr = p.username ? `${host}:${p.port}:${p.username}:${p.password}` : `${host}:${p.port}`;
                         const maxText = p.max_bytes > 0 ? ` / ${formatBytes(p.max_bytes)}` : "";
+                        const regDate = p.created_at ? new Date(p.created_at).toLocaleDateString("vi-VN") : "—";
                         const expDate = p.expires_at ? new Date(p.expires_at).toLocaleDateString("vi-VN") : "Vĩnh viễn";
 
                         return (
@@ -1388,14 +1392,9 @@ function App() {
                               />
                             </td>
 
-                            {/* Port */}
-                            <td className="py-3 px-3 font-mono font-semibold text-slate-100">
-                              :{p.port}
-                            </td>
-
                             {/* Note / Customer Name */}
                             <td className="py-3 px-3 font-medium text-slate-200">
-                              <span className="text-slate-200 font-medium">{p.name || "—"}</span>
+                              <span className="font-semibold text-slate-100">{p.name || `Proxy :${p.port}`}</span>
                             </td>
 
                             {/* Folder */}
@@ -1403,6 +1402,36 @@ function App() {
                               <span className="px-2 py-0.5 rounded text-[11px] bg-slate-800 text-slate-400 border border-slate-700/60">
                                 {p.group || "Mặc định"}
                               </span>
+                            </td>
+
+                            {/* IP : Port (Nằm kề User:Pass - Click để copy dạng ip:port:user:pass) */}
+                            <td className="py-3 px-3 font-mono">
+                              <button
+                                type="button"
+                                onClick={() => copyToClipboard(proxyStr, `Đã sao chép: ${proxyStr}`)}
+                                title="Click để sao chép: ip:port:user:pass"
+                                className="group flex items-center gap-1.5 text-indigo-300 hover:text-indigo-200 font-semibold cursor-pointer text-left"
+                              >
+                                <span>{host}:{p.port}</span>
+                                <Icon name="copy" className="w-3 h-3 text-slate-500 group-hover:text-indigo-300 opacity-60 group-hover:opacity-100 transition-opacity" />
+                              </button>
+                            </td>
+
+                            {/* User : Pass (Nằm kề IP:Port - Click để copy dạng ip:port:user:pass) */}
+                            <td className="py-3 px-3 font-mono text-[11px]">
+                              {p.username ? (
+                                <button
+                                  type="button"
+                                  onClick={() => copyToClipboard(proxyStr, `Đã sao chép: ${proxyStr}`)}
+                                  title="Click để sao chép: ip:port:user:pass"
+                                  className="group flex items-center gap-1.5 text-slate-300 hover:text-slate-100 cursor-pointer text-left"
+                                >
+                                  <span className="group-hover:underline">{p.username}:{p.password}</span>
+                                  <Icon name="copy" className="w-3 h-3 text-slate-500 group-hover:text-slate-300 opacity-60 group-hover:opacity-100 transition-opacity" />
+                                </button>
+                              ) : (
+                                <span className="text-slate-500 italic">Không mật khẩu</span>
+                              )}
                             </td>
 
                             {/* Protocol */}
@@ -1421,17 +1450,6 @@ function App() {
                                 <span className="px-2 py-0.5 rounded text-[10px] font-mono font-medium bg-emerald-500/10 text-emerald-300 border border-emerald-500/20">
                                   HTTP & SOCKS5
                                 </span>
-                              )}
-                            </td>
-
-                            {/* Credentials */}
-                            <td className="py-3 px-3 font-mono text-[11px] text-slate-300">
-                              {p.username ? (
-                                <span title="Click để copy tài khoản:mật khẩu" className="cursor-pointer hover:underline" onClick={() => copyToClipboard(`${p.username}:${p.password}`)}>
-                                  {p.username}:{p.password}
-                                </span>
-                              ) : (
-                                <span className="text-slate-500 italic">Không mật khẩu</span>
                               )}
                             </td>
 
@@ -1469,9 +1487,14 @@ function App() {
                               )}
                             </td>
 
-                            {/* Expiry */}
-                            <td className="py-3 px-3">
-                              <span className={p.expires_at && new Date() > new Date(p.expires_at) ? "text-rose-400 font-bold" : "text-slate-400"}>
+                            {/* Ngày Đăng Ký */}
+                            <td className="py-3 px-3 text-slate-400 font-mono text-[11px]">
+                              {regDate}
+                            </td>
+
+                            {/* Ngày Hết Hạn */}
+                            <td className="py-3 px-3 font-mono text-[11px]">
+                              <span className={p.expires_at && new Date() > new Date(p.expires_at) ? "text-rose-400 font-bold" : "text-slate-300"}>
                                 {expDate}
                               </span>
                               {p.expires_at && new Date() > new Date(p.expires_at) && (
@@ -1516,34 +1539,30 @@ function App() {
                                   <Icon name="refresh" className="w-3.5 h-3.5" />
                                 </button>
                                 <button
-                                  onClick={() => {
-                                    const host = stats?.public_ip || "103.199.11.9";
-                                    const str = p.username ? `${host}:${p.port}:${p.username}:${p.password}` : `${host}:${p.port}`;
-                                    copyToClipboard(str, `Đã copy: ${str}`);
-                                  }}
-                                  title="Copy Host:Port:User:Pass"
-                                  className="p-1.5 rounded text-slate-400 hover:text-slate-100 hover:bg-slate-800 transition-colors"
+                                  onClick={() => copyToClipboard(proxyStr, `Đã sao chép: ${proxyStr}`)}
+                                  title="Sao chép: IP:Port:User:Pass"
+                                  className="p-1.5 rounded text-slate-400 hover:text-slate-100 hover:bg-slate-800 transition-colors cursor-pointer"
                                 >
                                   <Icon name="copy" className="w-3.5 h-3.5" />
                                 </button>
                                 <button
                                   onClick={() => setSnippetProxy(p)}
                                   title="Xem code mẫu kết nối"
-                                  className="p-1.5 rounded text-slate-400 hover:text-slate-100 hover:bg-slate-800 transition-colors"
+                                  className="p-1.5 rounded text-slate-400 hover:text-slate-100 hover:bg-slate-800 transition-colors cursor-pointer"
                                 >
                                   <Icon name="code" className="w-3.5 h-3.5" />
                                 </button>
                                 <button
                                   onClick={() => setEditProxy(p)}
                                   title="Chỉnh sửa & Gia hạn proxy"
-                                  className="p-1.5 rounded text-slate-400 hover:text-slate-100 hover:bg-slate-800 transition-colors"
+                                  className="p-1.5 rounded text-slate-400 hover:text-slate-100 hover:bg-slate-800 transition-colors cursor-pointer"
                                 >
                                   <Icon name="edit" className="w-3.5 h-3.5" />
                                 </button>
                                 <button
                                   onClick={() => handleDelete(p)}
                                   title="Xóa proxy"
-                                  className="p-1.5 rounded text-slate-400 hover:text-rose-400 hover:bg-slate-800 transition-colors"
+                                  className="p-1.5 rounded text-slate-400 hover:text-rose-400 hover:bg-slate-800 transition-colors cursor-pointer"
                                 >
                                   <Icon name="trash" className="w-3.5 h-3.5" />
                                 </button>
