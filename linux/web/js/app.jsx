@@ -157,6 +157,14 @@ function Icon({ name, className = "w-4 h-4", ...props }) {
           <path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"></path>
         </svg>
       );
+    case "menu":
+      return (
+        <svg className={className} fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24" {...props}>
+          <line x1="3" y1="12" x2="21" y2="12"></line>
+          <line x1="3" y1="6" x2="21" y2="6"></line>
+          <line x1="3" y1="18" x2="21" y2="18"></line>
+        </svg>
+      );
     default:
       return null;
   }
@@ -368,6 +376,7 @@ function App() {
   const [snippetProxy, setSnippetProxy] = useState(null);
   const [newFolderModalOpen, setNewFolderModalOpen] = useState(false);
   const [newFolderName, setNewFolderName] = useState("");
+  const [sidebarOpen, setSidebarOpen] = useState(false);
 
   // Toast notifications
   const [toast, setToast] = useState(null);
@@ -508,7 +517,7 @@ function App() {
   };
 
   return (
-    <div className="flex flex-col min-h-screen bg-slate-950 text-slate-100">
+    <div className="flex h-screen w-screen overflow-hidden bg-slate-950 text-slate-100">
       {/* Toast Notification */}
       {toast && (
         <div className="fixed top-5 right-5 z-50 flex items-center gap-2.5 px-4 py-3 rounded-lg shadow-xl text-sm font-medium border bg-slate-900 border-slate-700 text-slate-100 animate-fade-in">
@@ -520,67 +529,229 @@ function App() {
         </div>
       )}
 
+      {/* Mobile Backdrop */}
+      {sidebarOpen && (
+        <div
+          onClick={() => setSidebarOpen(false)}
+          className="fixed inset-0 z-40 bg-black/60 backdrop-blur-sm lg:hidden"
+        ></div>
+      )}
+
       {/* ------------------------------------------------------------------ */}
-      {/* TOP HEADER (Clean, Professional, NO Duplicate Create Button)      */}
+      {/* LEFT SIDEBAR                                                       */}
       {/* ------------------------------------------------------------------ */}
-      <header className="border-b border-slate-800/80 bg-slate-900/40 backdrop-blur-md sticky top-0 z-30">
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 h-16 flex items-center justify-between gap-4">
-          {/* Logo & Server Ident */}
+      <aside
+        className={`fixed lg:static inset-y-0 left-0 z-50 w-64 bg-slate-900/90 border-r border-slate-800/80 flex flex-col transition-transform duration-300 backdrop-blur-md shrink-0 ${
+          sidebarOpen ? "translate-x-0" : "-translate-x-full lg:translate-x-0"
+        }`}
+      >
+        {/* Brand / Logo */}
+        <div className="p-4 border-b border-slate-800/80 flex items-center justify-between">
           <div className="flex items-center gap-3">
-            <div className="w-9 h-9 rounded-lg bg-indigo-600/20 border border-indigo-500/30 flex items-center justify-center text-indigo-400">
+            <div className="w-9 h-9 rounded-lg bg-indigo-600/20 border border-indigo-500/30 flex items-center justify-center text-indigo-400 shrink-0">
               <Icon name="server" className="w-5 h-5" />
             </div>
+            <div className="min-w-0">
+              <h1 className="text-sm font-semibold text-slate-100 truncate">IPv6 Proxy Hub</h1>
+              <span className="text-[11px] font-mono text-slate-400 block truncate">
+                {stats?.prefix || "2001:.../64"}
+              </span>
+            </div>
+          </div>
+          <button
+            onClick={() => setSidebarOpen(false)}
+            className="lg:hidden p-1.5 text-slate-400 hover:text-slate-200"
+          >
+            <Icon name="x" className="w-4 h-4" />
+          </button>
+        </div>
+
+        {/* Navigation Menu */}
+        <div className="p-3">
+          <div className="text-[10px] font-semibold text-slate-500 uppercase tracking-wider px-3 mb-2">
+            Điều Hướng Chính
+          </div>
+          <nav className="space-y-1">
+            <button
+              onClick={() => {
+                setActiveTab("proxies");
+                setSidebarOpen(false);
+              }}
+              className={`w-full flex items-center justify-between px-3 py-2 rounded-lg text-xs font-medium transition-colors ${
+                activeTab === "proxies"
+                  ? "bg-indigo-600/15 text-indigo-300 border border-indigo-500/30"
+                  : "text-slate-400 hover:text-slate-200 hover:bg-slate-800/40"
+              }`}
+            >
+              <div className="flex items-center gap-2.5">
+                <Icon name="network" className="w-4 h-4" />
+                <span>Quản Lý Proxy</span>
+              </div>
+              <span className="text-[10px] px-1.5 py-0.5 rounded-full font-mono bg-slate-800 text-slate-400">
+                {proxies.length}
+              </span>
+            </button>
+
+            <button
+              onClick={() => {
+                setActiveTab("stats");
+                setSidebarOpen(false);
+              }}
+              className={`w-full flex items-center justify-between px-3 py-2 rounded-lg text-xs font-medium transition-colors ${
+                activeTab === "stats"
+                  ? "bg-indigo-600/15 text-indigo-300 border border-indigo-500/30"
+                  : "text-slate-400 hover:text-slate-200 hover:bg-slate-800/40"
+              }`}
+            >
+              <div className="flex items-center gap-2.5">
+                <Icon name="activity" className="w-4 h-4" />
+                <span>Thống Kê Băng Thông</span>
+              </div>
+              <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse"></span>
+            </button>
+
+            <button
+              onClick={() => {
+                setActiveTab("guide");
+                setSidebarOpen(false);
+              }}
+              className={`w-full flex items-center gap-2.5 px-3 py-2 rounded-lg text-xs font-medium transition-colors ${
+                activeTab === "guide"
+                  ? "bg-indigo-600/15 text-indigo-300 border border-indigo-500/30"
+                  : "text-slate-400 hover:text-slate-200 hover:bg-slate-800/40"
+              }`}
+            >
+              <Icon name="book" className="w-4 h-4" />
+              <span>Hướng Dẫn Tích Hợp</span>
+            </button>
+          </nav>
+        </div>
+
+        {/* Folders List in Sidebar */}
+        <div className="flex-1 p-3 overflow-y-auto border-t border-slate-800/60">
+          <div className="flex items-center justify-between px-3 mb-2">
+            <span className="text-[10px] font-semibold text-slate-500 uppercase tracking-wider">
+              Thư Mục / Nhóm
+            </span>
+            <button
+              onClick={() => setNewFolderModalOpen(true)}
+              title="Thêm thư mục mới"
+              className="p-1 rounded text-slate-400 hover:text-indigo-300 hover:bg-slate-800/60 transition-colors"
+            >
+              <Icon name="folder-plus" className="w-3.5 h-3.5" />
+            </button>
+          </div>
+
+          <div className="space-y-1">
+            {Object.entries(folders).map(([fName, count]) => {
+              const isSelected = selectedFolder === fName;
+              return (
+                <button
+                  key={fName}
+                  onClick={() => {
+                    setSelectedFolder(fName);
+                    setActiveTab("proxies");
+                    setSidebarOpen(false);
+                  }}
+                  className={`w-full flex items-center justify-between px-3 py-1.5 rounded-lg text-xs font-medium transition-colors ${
+                    isSelected && activeTab === "proxies"
+                      ? "bg-slate-800 text-indigo-300 border border-indigo-500/40 shadow-sm"
+                      : "text-slate-400 hover:text-slate-200 hover:bg-slate-800/40"
+                  }`}
+                >
+                  <div className="flex items-center gap-2 truncate">
+                    <Icon name="folder" className="w-3.5 h-3.5 text-slate-400 shrink-0" />
+                    <span className="truncate">{fName === "all" ? "Tất Cả" : fName}</span>
+                  </div>
+                  <span
+                    className={`text-[10px] px-1.5 py-0.2 rounded-full font-mono ${
+                      isSelected && activeTab === "proxies"
+                        ? "bg-indigo-500/20 text-indigo-300"
+                        : "bg-slate-800/80 text-slate-500"
+                    }`}
+                  >
+                    {count}
+                  </span>
+                </button>
+              );
+            })}
+          </div>
+        </div>
+
+        {/* Server Status Footer Widget */}
+        <div className="p-3 border-t border-slate-800/80 bg-slate-950/40 space-y-2.5">
+          <div className="bg-slate-900/60 border border-slate-800/80 rounded-lg p-2.5 text-[11px] space-y-1 font-mono">
+            <div className="flex items-center justify-between text-slate-400">
+              <span>VPS IP:</span>
+              <span className="text-slate-200 font-medium">{stats?.public_ip || "103.199.11.9"}</span>
+            </div>
+            <div className="flex items-center justify-between text-slate-400">
+              <span>Uptime:</span>
+              <span className="text-slate-300">{stats?.uptime || "--"}</span>
+            </div>
+            <div className="flex items-center justify-between text-slate-400">
+              <span>RAM:</span>
+              <span className="text-slate-300">{stats?.ram_usage || "--"}</span>
+            </div>
+          </div>
+
+          <div className="flex items-center justify-between px-2 pt-1 text-xs">
+            <div className="flex items-center gap-2">
+              <span className="w-2 h-2 rounded-full bg-emerald-400"></span>
+              <span className="text-slate-300 font-medium">admin</span>
+            </div>
+            <a
+              href="/api/logout"
+              title="Đăng xuất"
+              className="text-slate-400 hover:text-rose-400 transition-colors flex items-center gap-1"
+            >
+              <Icon name="logout" className="w-3.5 h-3.5" />
+              <span className="text-[11px]">Thoát</span>
+            </a>
+          </div>
+        </div>
+      </aside>
+
+      {/* ------------------------------------------------------------------ */}
+      {/* RIGHT MAIN WORKSPACE                                               */}
+      {/* ------------------------------------------------------------------ */}
+      <div className="flex-1 flex flex-col min-w-0 h-full overflow-hidden">
+        {/* Top Header Bar */}
+        <header className="h-16 border-b border-slate-800/80 bg-slate-900/50 backdrop-blur-md px-4 sm:px-6 flex items-center justify-between gap-4 shrink-0">
+          {/* Left: Mobile Toggle & Page Title */}
+          <div className="flex items-center gap-3">
+            <button
+              onClick={() => setSidebarOpen(true)}
+              className="lg:hidden p-2 rounded-lg text-slate-400 hover:text-slate-200 hover:bg-slate-800"
+            >
+              <Icon name="menu" className="w-5 h-5" />
+            </button>
             <div>
               <div className="flex items-center gap-2">
-                <h1 className="text-base font-semibold text-slate-100">IPv6 Proxy Hub</h1>
-                <span className="px-2 py-0.5 rounded text-[11px] font-mono bg-indigo-500/10 text-indigo-300 border border-indigo-500/20">
-                  {stats?.prefix || "2001:.../64"}
-                </span>
+                <h2 className="text-sm font-semibold text-slate-100">
+                  {activeTab === "proxies" && (
+                    <span>
+                      Quản Lý Proxy
+                      {selectedFolder !== "all" && (
+                        <span className="text-slate-400 font-normal ml-1.5">
+                          / Thư mục: <strong className="text-indigo-300">{selectedFolder}</strong>
+                        </span>
+                      )}
+                    </span>
+                  )}
+                  {activeTab === "stats" && "Thống Kê Băng Thông Realtime"}
+                  {activeTab === "guide" && "Tài Liệu & Hướng Dẫn Tích Hợp"}
+                </h2>
               </div>
-              <div className="text-xs text-slate-400 font-mono">
-                IP: <span className="text-slate-300 font-medium">{stats?.public_ip || "103.199.11.9"}</span> • Uptime: {stats?.uptime || "--"}
+              <div className="text-[11px] text-slate-400">
+                {activeTab === "proxies" && `${filteredProxies.length} proxy hiển thị • Cập nhật lúc: ${lastUpdated ? lastUpdated.toLocaleTimeString() : "--"}`}
+                {activeTab === "stats" && "Giám sát lưu lượng truyền tải và băng thông mạng"}
+                {activeTab === "guide" && "Cấu hình kết nối cho Antidetect Browser và Tool Automation"}
               </div>
             </div>
           </div>
 
-          {/* Navigation Tabs */}
-          <nav className="hidden md:flex items-center gap-1 bg-slate-900/80 p-1 rounded-lg border border-slate-800/80">
-            <button
-              onClick={() => setActiveTab("proxies")}
-              className={`px-3 py-1.5 rounded-md text-xs font-medium transition-colors flex items-center gap-1.5 ${
-                activeTab === "proxies"
-                  ? "bg-indigo-600 text-white shadow-sm"
-                  : "text-slate-400 hover:text-slate-200 hover:bg-slate-800/50"
-              }`}
-            >
-              <Icon name="network" className="w-3.5 h-3.5" />
-              Quản Lý Proxy
-            </button>
-            <button
-              onClick={() => setActiveTab("stats")}
-              className={`px-3 py-1.5 rounded-md text-xs font-medium transition-colors flex items-center gap-1.5 ${
-                activeTab === "stats"
-                  ? "bg-indigo-600 text-white shadow-sm"
-                  : "text-slate-400 hover:text-slate-200 hover:bg-slate-800/50"
-              }`}
-            >
-              <Icon name="activity" className="w-3.5 h-3.5" />
-              Thống Kê Băng Thông
-            </button>
-            <button
-              onClick={() => setActiveTab("guide")}
-              className={`px-3 py-1.5 rounded-md text-xs font-medium transition-colors flex items-center gap-1.5 ${
-                activeTab === "guide"
-                  ? "bg-indigo-600 text-white shadow-sm"
-                  : "text-slate-400 hover:text-slate-200 hover:bg-slate-800/50"
-              }`}
-            >
-              <Icon name="book" className="w-3.5 h-3.5" />
-              Tích Hợp
-            </button>
-          </nav>
-
-          {/* Polling Interval Selector & Actions (Configurable polling to avoid lag) */}
+          {/* Right: Polling Interval & Manual Refresh */}
           <div className="flex items-center gap-2.5">
             {/* Polling Interval Select */}
             <div className="flex items-center gap-1.5 text-xs text-slate-400 bg-slate-900/80 border border-slate-800/80 rounded-lg px-2.5 py-1.5">
@@ -607,23 +778,11 @@ function App() {
             >
               <Icon name="refresh" className={`w-4 h-4 ${isRefreshing ? "animate-spin text-indigo-400" : ""}`} />
             </button>
-
-            {/* Logout Button */}
-            <a
-              href="/api/logout"
-              title="Đăng xuất"
-              className="p-2 rounded-lg text-slate-400 hover:text-rose-400 hover:bg-slate-900/80 transition-colors"
-            >
-              <Icon name="logout" className="w-4 h-4" />
-            </a>
           </div>
-        </div>
-      </header>
+        </header>
 
-      {/* ------------------------------------------------------------------ */}
-      {/* MAIN CONTENT AREA                                                  */}
-      {/* ------------------------------------------------------------------ */}
-      <main className="max-w-7xl mx-auto px-4 sm:px-6 py-6 flex-1 w-full flex flex-col gap-6">
+        {/* Scrollable Main Content */}
+        <main className="flex-1 overflow-y-auto p-4 sm:p-6 space-y-6">
         {/* VIEW 1: PROXIES TABLE & FOLDER MANAGEMENT */}
         {activeTab === "proxies" && (
           <div className="flex flex-col gap-5">
@@ -990,6 +1149,7 @@ function App() {
           </div>
         )}
       </main>
+    </div>
 
       {/* ------------------------------------------------------------------ */}
       {/* MODAL: CREATE PROXY                                                */}
