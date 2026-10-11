@@ -63,6 +63,7 @@ func (ws *WebServer) Start() error {
 	mux.HandleFunc("/api/stats", ws.authMiddleware(ws.handleStats))
 	mux.HandleFunc("/api/proxies", ws.authMiddleware(ws.handleProxies))
 	mux.HandleFunc("/api/proxies/bulk", ws.authMiddleware(ws.handleProxiesBulk))
+	mux.HandleFunc("/api/proxies/batch", ws.authMiddleware(ws.handleProxiesBatch))
 	mux.HandleFunc("/api/proxies/", ws.authMiddleware(ws.handleProxyItem))
 	mux.HandleFunc("/api/export", ws.authMiddleware(ws.handleExport))
 	mux.HandleFunc("/api/settings", ws.authMiddleware(ws.handleSettings))

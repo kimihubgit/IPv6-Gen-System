@@ -433,15 +433,75 @@ function App() {
     return () => clearInterval(timer);
   }, [refreshInterval, fetchData]);
 
-  // Distinct Folders calculation
+  // Selection State for Table Multi-Row Actions
+  const [selectedIds, setSelectedIds] = useState([]);
+
+  // Persistent Custom Folders (so newly created folders NEVER disappear even if 0 proxies)
+  const [customFolders, setCustomFolders] = useState(() => {
+    try {
+      const saved = localStorage.getItem("ipv6_proxy_folders");
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        if (Array.isArray(parsed) && parsed.length > 0) return parsed;
+      }
+    } catch (_) {}
+    return ["Mặc định"];
+  });
+
+  // Keep all distinct folder names (custom + existing proxies)
+  const allFolderNames = useMemo(() => {
+    const set = new Set(["Mặc định", ...customFolders]);
+    proxies.forEach((p) => {
+      if (p.group && p.group.trim()) set.add(p.group.trim());
+    });
+    return Array.from(set);
+  }, [customFolders, proxies]);
+
+  // Distinct Folders calculation with exact counts
   const folders = useMemo(() => {
-    const map = { all: proxies.length, "Mặc định": 0 };
+    const map = { all: proxies.length };
+    allFolderNames.forEach((f) => {
+      map[f] = 0;
+    });
     proxies.forEach((p) => {
       const g = p.group && p.group.trim() !== "" ? p.group.trim() : "Mặc định";
       map[g] = (map[g] || 0) + 1;
     });
     return map;
-  }, [proxies]);
+  }, [allFolderNames, proxies]);
+
+  // Create folder helper
+  const handleCreateFolder = (name) => {
+    const trimmed = name.trim();
+    if (!trimmed) return;
+    if (!customFolders.includes(trimmed)) {
+      const updated = [...customFolders, trimmed];
+      setCustomFolders(updated);
+      try {
+        localStorage.setItem("ipv6_proxy_folders", JSON.stringify(updated));
+      } catch (_) {}
+    }
+    setSelectedFolder(trimmed);
+    showToast(`Đã tạo thư mục: ${trimmed}`);
+  };
+
+  // Delete empty folder helper
+  const handleDeleteFolder = (e, fName) => {
+    e.stopPropagation();
+    if (fName === "Mặc định" || fName === "all") return;
+    const hasProxies = proxies.some((p) => (p.group || "Mặc định") === fName);
+    if (hasProxies) {
+      showToast("Không thể xóa thư mục đang có proxy bên trong!", "error");
+      return;
+    }
+    const updated = customFolders.filter((f) => f !== fName);
+    setCustomFolders(updated);
+    try {
+      localStorage.setItem("ipv6_proxy_folders", JSON.stringify(updated));
+    } catch (_) {}
+    if (selectedFolder === fName) setSelectedFolder("all");
+    showToast(`Đã xóa thư mục: ${fName}`);
+  };
 
   // Filtered Proxies calculation
   const filteredProxies = useMemo(() => {
@@ -496,6 +556,7 @@ function App() {
       const res = await fetch(`/api/proxies/${p.id}`, { method: "DELETE" });
       if (res.ok) {
         showToast(`Đã xóa cổng :${p.port}`);
+        setSelectedIds((prev) => prev.filter((id) => id !== p.id));
         fetchData(false);
       } else {
         showToast("Không thể xóa", "error");
@@ -514,6 +575,99 @@ function App() {
   // Export File
   const handleExport = (fmt) => {
     window.open(`/api/export?format=${fmt}`, "_blank");
+  };
+
+  // Batch Operations
+  const handleBatchChangeGroup = async (targetGroup) => {
+    if (selectedIds.length === 0) return;
+    try {
+      const res = await fetch("/api/proxies/batch", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "set_group", ids: selectedIds, group: targetGroup }),
+      });
+      const data = await res.json();
+      if (res.ok) {
+        showToast(data.message || `Đã chuyển ${selectedIds.length} proxy sang '${targetGroup}'`);
+        setSelectedIds([]);
+        fetchData(false);
+      } else {
+        showToast(data.error || "Thao tác thất bại", "error");
+      }
+    } catch {
+      showToast("Lỗi kết nối", "error");
+    }
+  };
+
+  const handleBatchSetEnabled = async (enabled) => {
+    if (selectedIds.length === 0) return;
+    try {
+      const res = await fetch("/api/proxies/batch", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "set_enabled", ids: selectedIds, enabled }),
+      });
+      const data = await res.json();
+      if (res.ok) {
+        showToast(data.message || `Đã ${enabled ? "bật" : "tắt"} ${selectedIds.length} proxy`);
+        setSelectedIds([]);
+        fetchData(false);
+      } else {
+        showToast(data.error || "Thao tác thất bại", "error");
+      }
+    } catch {
+      showToast("Lỗi kết nối", "error");
+    }
+  };
+
+  const handleBatchDelete = async () => {
+    if (selectedIds.length === 0) return;
+    if (!confirm(`Bạn có chắc muốn xóa vĩnh viễn ${selectedIds.length} proxy đã chọn?`)) return;
+    try {
+      const res = await fetch("/api/proxies/batch", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "delete", ids: selectedIds }),
+      });
+      const data = await res.json();
+      if (res.ok) {
+        showToast(data.message || `Đã xóa ${selectedIds.length} proxy`);
+        setSelectedIds([]);
+        fetchData(false);
+      } else {
+        showToast(data.error || "Thao tác thất bại", "error");
+      }
+    } catch {
+      showToast("Lỗi kết nối", "error");
+    }
+  };
+
+  const handleBatchCopy = () => {
+    if (selectedIds.length === 0) return;
+    const host = stats?.public_ip || "103.199.11.9";
+    const selectedProxies = proxies.filter((p) => selectedIds.includes(p.id));
+    const lines = selectedProxies.map((p) =>
+      p.username ? `${host}:${p.port}:${p.username}:${p.password}` : `${host}:${p.port}`
+    );
+    navigator.clipboard.writeText(lines.join("\n"));
+    showToast(`Đã sao chép chuỗi kết nối ${lines.length} proxy!`);
+  };
+
+  const handleBatchExport = () => {
+    if (selectedIds.length === 0) return;
+    const host = stats?.public_ip || "103.199.11.9";
+    const selectedProxies = proxies.filter((p) => selectedIds.includes(p.id));
+    const lines = selectedProxies.map((p) =>
+      p.username ? `${host}:${p.port}:${p.username}:${p.password}` : `${host}:${p.port}`
+    );
+    const blob = new Blob([lines.join("\n")], { type: "text/plain;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `proxies_selected_${Date.now()}.txt`;
+    a.click();
+    URL.revokeObjectURL(url);
+    showToast(`Đã tải xuống file cho ${lines.length} proxy!`);
   };
 
   return (
@@ -646,14 +800,14 @@ function App() {
             {Object.entries(folders).map(([fName, count]) => {
               const isSelected = selectedFolder === fName;
               return (
-                <button
+                <div
                   key={fName}
                   onClick={() => {
                     setSelectedFolder(fName);
                     setActiveTab("proxies");
                     setSidebarOpen(false);
                   }}
-                  className={`w-full flex items-center justify-between px-3 py-1.5 rounded-lg text-xs font-medium transition-colors ${
+                  className={`w-full flex items-center justify-between px-3 py-1.5 rounded-lg text-xs font-medium transition-colors cursor-pointer group ${
                     isSelected && activeTab === "proxies"
                       ? "bg-slate-800 text-indigo-300 border border-indigo-500/40 shadow-sm"
                       : "text-slate-400 hover:text-slate-200 hover:bg-slate-800/40"
@@ -663,16 +817,27 @@ function App() {
                     <Icon name="folder" className="w-3.5 h-3.5 text-slate-400 shrink-0" />
                     <span className="truncate">{fName === "all" ? "Tất Cả" : fName}</span>
                   </div>
-                  <span
-                    className={`text-[10px] px-1.5 py-0.2 rounded-full font-mono ${
-                      isSelected && activeTab === "proxies"
-                        ? "bg-indigo-500/20 text-indigo-300"
-                        : "bg-slate-800/80 text-slate-500"
-                    }`}
-                  >
-                    {count}
-                  </span>
-                </button>
+                  <div className="flex items-center gap-1.5 shrink-0">
+                    <span
+                      className={`text-[10px] px-1.5 py-0.2 rounded-full font-mono ${
+                        isSelected && activeTab === "proxies"
+                          ? "bg-indigo-500/20 text-indigo-300"
+                          : "bg-slate-800/80 text-slate-500"
+                      }`}
+                    >
+                      {count}
+                    </span>
+                    {fName !== "all" && fName !== "Mặc định" && count === 0 && (
+                      <button
+                        onClick={(e) => handleDeleteFolder(e, fName)}
+                        title="Xóa thư mục rỗng này"
+                        className="opacity-0 group-hover:opacity-100 p-0.5 text-slate-500 hover:text-rose-400 transition-opacity"
+                      >
+                        <Icon name="trash" className="w-3 h-3" />
+                      </button>
+                    )}
+                  </div>
+                </div>
               );
             })}
           </div>
@@ -902,13 +1067,113 @@ function App() {
               </div>
             </div>
 
+            {/* Batch Selection Action Bar (Appears when 1 or more proxies are selected) */}
+            {selectedIds.length > 0 && (
+              <div className="bg-indigo-950/40 border border-indigo-500/40 rounded-xl p-3 flex flex-wrap items-center justify-between gap-3 shadow-lg backdrop-blur-md animate-fade-in">
+                <div className="flex items-center gap-3">
+                  <span className="text-xs font-semibold text-indigo-300 bg-indigo-500/20 border border-indigo-500/30 px-2.5 py-1 rounded-lg flex items-center gap-1.5">
+                    <Icon name="check" className="w-3.5 h-3.5 text-indigo-400" />
+                    Đã chọn: <strong>{selectedIds.length}</strong> proxy
+                  </span>
+                  <button
+                    onClick={() => setSelectedIds([])}
+                    className="text-xs text-slate-400 hover:text-slate-200 underline cursor-pointer"
+                  >
+                    Bỏ chọn tất cả
+                  </button>
+                </div>
+
+                <div className="flex flex-wrap items-center gap-2">
+                  {/* Move to folder */}
+                  <div className="flex items-center gap-1.5 bg-slate-900 border border-slate-700 rounded-lg px-2.5 py-1">
+                    <Icon name="folder" className="w-3.5 h-3.5 text-indigo-400 shrink-0" />
+                    <select
+                      onChange={(e) => {
+                        if (e.target.value) {
+                          handleBatchChangeGroup(e.target.value);
+                          e.target.value = "";
+                        }
+                      }}
+                      defaultValue=""
+                      className="bg-transparent text-xs text-slate-200 focus:outline-none cursor-pointer"
+                    >
+                      <option value="" disabled>Chuyển thư mục...</option>
+                      {allFolderNames.map((f) => (
+                        <option key={f} value={f} className="bg-slate-900 text-slate-200">{f}</option>
+                      ))}
+                    </select>
+                  </div>
+
+                  {/* Enable selected */}
+                  <button
+                    onClick={() => handleBatchSetEnabled(true)}
+                    className="px-2.5 py-1.5 rounded-lg text-xs font-medium bg-emerald-950/60 hover:bg-emerald-900/70 border border-emerald-500/40 text-emerald-300 flex items-center gap-1 transition-colors"
+                  >
+                    <Icon name="check" className="w-3.5 h-3.5" />
+                    <span>Bật</span>
+                  </button>
+
+                  {/* Disable selected */}
+                  <button
+                    onClick={() => handleBatchSetEnabled(false)}
+                    className="px-2.5 py-1.5 rounded-lg text-xs font-medium bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-300 flex items-center gap-1 transition-colors"
+                  >
+                    <Icon name="x" className="w-3.5 h-3.5" />
+                    <span>Tắt</span>
+                  </button>
+
+                  {/* Copy selected */}
+                  <button
+                    onClick={handleBatchCopy}
+                    className="px-2.5 py-1.5 rounded-lg text-xs font-medium bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-200 flex items-center gap-1 transition-colors"
+                  >
+                    <Icon name="copy" className="w-3.5 h-3.5" />
+                    <span>Sao chép chuỗi</span>
+                  </button>
+
+                  {/* Export selected */}
+                  <button
+                    onClick={handleBatchExport}
+                    className="px-2.5 py-1.5 rounded-lg text-xs font-medium bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-200 flex items-center gap-1 transition-colors"
+                  >
+                    <Icon name="download" className="w-3.5 h-3.5" />
+                    <span>Xuất file</span>
+                  </button>
+
+                  {/* Delete selected */}
+                  <button
+                    onClick={handleBatchDelete}
+                    className="px-2.5 py-1.5 rounded-lg text-xs font-medium bg-rose-950/60 hover:bg-rose-900/70 border border-rose-500/40 text-rose-300 flex items-center gap-1 transition-colors"
+                  >
+                    <Icon name="trash" className="w-3.5 h-3.5" />
+                    <span>Xóa đã chọn</span>
+                  </button>
+                </div>
+              </div>
+            )}
+
             {/* Proxy Data Table */}
             <div className="bg-slate-900/40 border border-slate-800/80 rounded-xl overflow-hidden shadow-sm">
               <div className="overflow-x-auto">
                 <table className="w-full text-left text-xs">
                   <thead className="bg-slate-900/80 text-slate-400 border-b border-slate-800/80 font-medium">
                     <tr>
-                      <th className="py-3 px-3 w-10 text-center">#</th>
+                      <th className="py-3 px-3 w-10 text-center">
+                        <input
+                          type="checkbox"
+                          checked={filteredProxies.length > 0 && filteredProxies.every((p) => selectedIds.includes(p.id))}
+                          onChange={() => {
+                            const allSelected = filteredProxies.length > 0 && filteredProxies.every((p) => selectedIds.includes(p.id));
+                            if (allSelected) {
+                              setSelectedIds([]);
+                            } else {
+                              const visibleIds = filteredProxies.map((p) => p.id);
+                              setSelectedIds(Array.from(new Set([...selectedIds, ...visibleIds])));
+                            }
+                          }}
+                          className="w-4 h-4 rounded text-indigo-600 bg-slate-800 border-slate-700 focus:ring-indigo-500 cursor-pointer"
+                        />
+                      </th>
                       <th className="py-3 px-3">Cổng (Port)</th>
                       <th className="py-3 px-3">Ghi Chú / Tên Khách</th>
                       <th className="py-3 px-3">Thư Mục</th>
@@ -930,13 +1195,23 @@ function App() {
                       </tr>
                     ) : (
                       filteredProxies.map((p, idx) => {
+                        const isSelected = selectedIds.includes(p.id);
                         const maxText = p.max_bytes > 0 ? ` / ${formatBytes(p.max_bytes)}` : "";
                         const expDate = p.expires_at ? new Date(p.expires_at).toLocaleDateString("vi-VN") : "Vĩnh viễn";
 
                         return (
-                          <tr key={p.id} className="hover:bg-slate-900/60 transition-colors">
-                            <td className="py-3 px-3 text-center text-slate-500 font-mono text-[11px]">
-                              {idx + 1}
+                          <tr key={p.id} className={`transition-colors ${isSelected ? "bg-indigo-950/30 hover:bg-indigo-950/50" : "hover:bg-slate-900/60"}`}>
+                            <td className="py-3 px-3 text-center">
+                              <input
+                                type="checkbox"
+                                checked={isSelected}
+                                onChange={() => {
+                                  setSelectedIds((prev) =>
+                                    prev.includes(p.id) ? prev.filter((id) => id !== p.id) : [...prev, p.id]
+                                  );
+                                }}
+                                className="w-4 h-4 rounded text-indigo-600 bg-slate-800 border-slate-700 focus:ring-indigo-500 cursor-pointer"
+                              />
                             </td>
 
                             {/* Port */}
@@ -1156,9 +1431,11 @@ function App() {
       {/* ------------------------------------------------------------------ */}
       {createModalOpen && (
         <CreateProxyModal
-          folders={Object.keys(folders).filter((f) => f !== "all")}
+          folders={allFolderNames}
+          defaultFolder={selectedFolder !== "all" ? selectedFolder : "Mặc định"}
           suggestPort={stats?.suggest_port || 10010}
           onClose={() => setCreateModalOpen(false)}
+          onCreateFolder={handleCreateFolder}
           onSuccess={() => {
             setCreateModalOpen(false);
             showToast("Tạo cổng proxy thành công!");
@@ -1172,9 +1449,11 @@ function App() {
       {/* ------------------------------------------------------------------ */}
       {bulkModalOpen && (
         <BulkProxyModal
-          folders={Object.keys(folders).filter((f) => f !== "all")}
+          folders={allFolderNames}
+          defaultFolder={selectedFolder !== "all" ? selectedFolder : "Mặc định"}
           suggestPort={stats?.suggest_port || 10010}
           onClose={() => setBulkModalOpen(false)}
+          onCreateFolder={handleCreateFolder}
           onSuccess={(count) => {
             setBulkModalOpen(false);
             showToast(`Đã tạo thành công ${count} cổng proxy!`);
@@ -1189,8 +1468,9 @@ function App() {
       {editProxy && (
         <EditProxyModal
           proxy={editProxy}
-          folders={Object.keys(folders).filter((f) => f !== "all")}
+          folders={allFolderNames}
           onClose={() => setEditProxy(null)}
+          onCreateFolder={handleCreateFolder}
           onSuccess={() => {
             setEditProxy(null);
             showToast("Cập nhật proxy thành công!");
@@ -1242,8 +1522,7 @@ function App() {
               <button
                 onClick={() => {
                   if (newFolderName.trim()) {
-                    setSelectedFolder(newFolderName.trim());
-                    showToast(`Đã chọn thư mục: ${newFolderName.trim()}`);
+                    handleCreateFolder(newFolderName.trim());
                     setNewFolderName("");
                     setNewFolderModalOpen(false);
                   }
@@ -1263,10 +1542,10 @@ function App() {
 // ----------------------------------------------------------------------
 // Modal: Create Proxy (Single)
 // ----------------------------------------------------------------------
-function CreateProxyModal({ folders, suggestPort, onClose, onSuccess }) {
+function CreateProxyModal({ folders, defaultFolder = "Mặc định", suggestPort, onClose, onSuccess, onCreateFolder }) {
   const [port, setPort] = useState(suggestPort);
   const [name, setName] = useState("");
-  const [group, setGroup] = useState(folders[0] || "Mặc định");
+  const [group, setGroup] = useState(folders.includes(defaultFolder) ? defaultFolder : (folders[0] || "Mặc định"));
   const [customGroup, setCustomGroup] = useState("");
   const [proto, setProto] = useState("both");
   const [rotType, setRotType] = useState("request");
@@ -1285,7 +1564,13 @@ function CreateProxyModal({ folders, suggestPort, onClose, onSuccess }) {
 
   const handleSubmit = async (e) => {
     e.preventDefault();
-    const finalGroup = customGroup.trim() !== "" ? customGroup.trim() : group;
+    let finalGroup = group;
+    if (group === "__custom__") {
+      finalGroup = customGroup.trim() || "Mặc định";
+      if (onCreateFolder && customGroup.trim()) {
+        onCreateFolder(customGroup.trim());
+      }
+    }
 
     const payload = {
       port: Number(port),
@@ -1516,11 +1801,11 @@ function CreateProxyModal({ folders, suggestPort, onClose, onSuccess }) {
 // ----------------------------------------------------------------------
 // Modal: Bulk Create Proxies
 // ----------------------------------------------------------------------
-function BulkProxyModal({ folders, suggestPort, onClose, onSuccess }) {
+function BulkProxyModal({ folders, defaultFolder = "Mặc định", suggestPort, onClose, onSuccess, onCreateFolder }) {
   const [startPort, setStartPort] = useState(suggestPort);
   const [count, setCount] = useState(10);
   const [namePrefix, setNamePrefix] = useState("Khách");
-  const [group, setGroup] = useState(folders[0] || "Mặc định");
+  const [group, setGroup] = useState(folders.includes(defaultFolder) ? defaultFolder : (folders[0] || "Mặc định"));
   const [customGroup, setCustomGroup] = useState("");
   const [proto, setProto] = useState("both");
   const [rotType, setRotType] = useState("request");
@@ -1533,7 +1818,13 @@ function BulkProxyModal({ folders, suggestPort, onClose, onSuccess }) {
 
   const handleSubmit = async (e) => {
     e.preventDefault();
-    const finalGroup = customGroup.trim() !== "" ? customGroup.trim() : group;
+    let finalGroup = group;
+    if (group === "__custom__") {
+      finalGroup = customGroup.trim() || "Mặc định";
+      if (onCreateFolder && customGroup.trim()) {
+        onCreateFolder(customGroup.trim());
+      }
+    }
 
     const payload = {
       start_port: Number(startPort),
@@ -1623,15 +1914,30 @@ function BulkProxyModal({ folders, suggestPort, onClose, onSuccess }) {
             </div>
             <div>
               <label className="block text-slate-300 font-medium mb-1">Thư mục / Nhóm</label>
-              <select
-                value={group}
-                onChange={(e) => setGroup(e.target.value)}
-                className="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-slate-200 focus:outline-none focus:border-indigo-500 cursor-pointer"
-              >
-                {folders.map((f) => (
-                  <option key={f} value={f}>{f}</option>
-                ))}
-              </select>
+              <div className="flex gap-2">
+                <select
+                  value={group}
+                  onChange={(e) => {
+                    setGroup(e.target.value);
+                    if (e.target.value !== "__custom__") setCustomGroup("");
+                  }}
+                  className="bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-slate-200 focus:outline-none focus:border-indigo-500 flex-1 cursor-pointer"
+                >
+                  {folders.map((f) => (
+                    <option key={f} value={f}>{f}</option>
+                  ))}
+                  <option value="__custom__">+ Nhập nhóm mới...</option>
+                </select>
+                {group === "__custom__" && (
+                  <input
+                    type="text"
+                    value={customGroup}
+                    onChange={(e) => setCustomGroup(e.target.value)}
+                    placeholder="Tên nhóm mới..."
+                    className="bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-slate-200 flex-1 focus:outline-none focus:border-indigo-500"
+                  />
+                )}
+              </div>
             </div>
           </div>
 
@@ -1719,7 +2025,7 @@ function BulkProxyModal({ folders, suggestPort, onClose, onSuccess }) {
 // ----------------------------------------------------------------------
 // Modal: Edit Proxy
 // ----------------------------------------------------------------------
-function EditProxyModal({ proxy, folders, onClose, onSuccess }) {
+function EditProxyModal({ proxy, folders, onClose, onSuccess, onCreateFolder }) {
   const [name, setName] = useState(proxy.name || "");
   const [group, setGroup] = useState(proxy.group || "Mặc định");
   const [customGroup, setCustomGroup] = useState("");
@@ -1732,7 +2038,13 @@ function EditProxyModal({ proxy, folders, onClose, onSuccess }) {
 
   const handleSubmit = async (e) => {
     e.preventDefault();
-    const finalGroup = customGroup.trim() !== "" ? customGroup.trim() : group;
+    let finalGroup = group;
+    if (group === "__custom__") {
+      finalGroup = customGroup.trim() || "Mặc định";
+      if (onCreateFolder && customGroup.trim()) {
+        onCreateFolder(customGroup.trim());
+      }
+    }
 
     const payload = {
       name: name.trim(),

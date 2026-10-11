@@ -558,6 +558,91 @@ func (ws *WebServer) handleProxyItem(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+func (ws *WebServer) handleProxiesBatch(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var req struct {
+		Action  string   `json:"action"` // "set_group", "set_enabled", "delete"
+		IDs     []string `json:"ids"`
+		Group   string   `json:"group"`
+		Enabled bool     `json:"enabled"`
+	}
+
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		jsonResponse(w, http.StatusBadRequest, map[string]string{"error": "Dữ liệu JSON không hợp lệ"})
+		return
+	}
+
+	if len(req.IDs) == 0 {
+		jsonResponse(w, http.StatusBadRequest, map[string]string{"error": "Chưa chọn proxy nào"})
+		return
+	}
+
+	count := 0
+	switch req.Action {
+	case "set_group":
+		group := strings.TrimSpace(req.Group)
+		if group == "" {
+			group = "Mặc định"
+		}
+		for _, id := range req.IDs {
+			acc := ws.store.GetByID(id)
+			if acc != nil {
+				acc.Group = group
+				count++
+			}
+		}
+		_ = ws.store.Save()
+		jsonResponse(w, http.StatusOK, map[string]interface{}{
+			"status":  "ok",
+			"message": fmt.Sprintf("Đã chuyển %d proxy sang thư mục '%s'", count, group),
+			"count":   count,
+		})
+
+	case "set_enabled":
+		for _, id := range req.IDs {
+			acc := ws.store.GetByID(id)
+			if acc != nil {
+				acc.Enabled = req.Enabled
+				_ = ws.manager.SyncAccount(acc)
+				count++
+			}
+		}
+		_ = ws.store.Save()
+		statusText := "bật"
+		if !req.Enabled {
+			statusText = "tắt"
+		}
+		jsonResponse(w, http.StatusOK, map[string]interface{}{
+			"status":  "ok",
+			"message": fmt.Sprintf("Đã %s %d proxy được chọn", statusText, count),
+			"count":   count,
+		})
+
+	case "delete":
+		for _, id := range req.IDs {
+			acc := ws.store.GetByID(id)
+			if acc != nil {
+				ws.manager.RemoveAccount(acc.Port)
+				_ = ws.store.Delete(acc.ID)
+				count++
+			}
+		}
+		_ = ws.store.Save()
+		jsonResponse(w, http.StatusOK, map[string]interface{}{
+			"status":  "ok",
+			"message": fmt.Sprintf("Đã xóa %d proxy được chọn", count),
+			"count":   count,
+		})
+
+	default:
+		jsonResponse(w, http.StatusBadRequest, map[string]string{"error": "Hành động không hợp lệ"})
+	}
+}
+
 func (ws *WebServer) handleExport(w http.ResponseWriter, r *http.Request) {
 	format := r.URL.Query().Get("format")
 	proxies := ws.store.GetAll()
