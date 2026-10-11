@@ -18,7 +18,8 @@ const (
 // ProxyAccount represents a proxy allocated on a dedicated port
 type ProxyAccount struct {
 	ID           string         `json:"id"`
-	Name         string         `json:"name"`          // Tên ghi chú
+	Name         string         `json:"name"`          // Tên ghi chú / Khách hàng
+	Group        string         `json:"group"`         // Nhóm / Thư mục phân loại
 	Port         int            `json:"port"`          // Cổng kết nối (1024 - 65535)
 	Username     string         `json:"username"`      // Tài khoản auth
 	Password     string         `json:"password"`      // Mật khẩu auth

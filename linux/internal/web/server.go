@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"mime"
 	"net/http"
 	"os"
 	"sync"
@@ -51,6 +52,9 @@ func NewWebServer(port int, prefix string, publicIPv4 string, manager *engine.Mu
 
 // Start launches the Web Dashboard HTTP listener
 func (ws *WebServer) Start() error {
+	_ = mime.AddExtensionType(".jsx", "text/javascript; charset=utf-8")
+	_ = mime.AddExtensionType(".js", "text/javascript; charset=utf-8")
+
 	mux := http.NewServeMux()
 
 	// API routes

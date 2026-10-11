@@ -161,6 +161,15 @@ func (ws *WebServer) handleStats(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 
+	groupMap := make(map[string]int)
+	for _, p := range proxies {
+		g := p.Group
+		if g == "" {
+			g = "Mặc định"
+		}
+		groupMap[g]++
+	}
+
 	res := map[string]interface{}{
 		"active_proxies":  activeCount,
 		"total_proxies":   len(proxies),
@@ -173,6 +182,7 @@ func (ws *WebServer) handleStats(w http.ResponseWriter, r *http.Request) {
 		"goroutines":      goroutines,
 		"cpu_cores":       numCPU,
 		"rotation_counts": rotCounts,
+		"groups":          groupMap,
 		"top_proxies":     topProxies,
 		"ndp_status":      "Tối Ưu & An Toàn (Active)",
 	}
@@ -184,11 +194,17 @@ func (ws *WebServer) handleProxies(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodGet:
 		proxies := ws.store.GetAll()
+		for _, p := range proxies {
+			if p.Group == "" {
+				p.Group = "Mặc định"
+			}
+		}
 		jsonResponse(w, http.StatusOK, proxies)
 
 	case http.MethodPost:
 		var req struct {
 			Name         string  `json:"name"`
+			Group        string  `json:"group"`
 			Port         int     `json:"port"`
 			Username     string  `json:"username"`
 			Password     string  `json:"password"`
@@ -211,6 +227,11 @@ func (ws *WebServer) handleProxies(w http.ResponseWriter, r *http.Request) {
 
 		if req.Name == "" {
 			req.Name = fmt.Sprintf("Proxy Port %d", req.Port)
+		}
+
+		group := strings.TrimSpace(req.Group)
+		if group == "" {
+			group = "Mặc định"
 		}
 
 		var maxBytes int64 = 0
@@ -242,6 +263,7 @@ func (ws *WebServer) handleProxies(w http.ResponseWriter, r *http.Request) {
 		acc := &store.ProxyAccount{
 			ID:           fmt.Sprintf("px-%d", time.Now().UnixNano()),
 			Name:         req.Name,
+			Group:        group,
 			Port:         req.Port,
 			Username:     req.Username,
 			Password:     req.Password,
@@ -284,6 +306,7 @@ func (ws *WebServer) handleProxiesBulk(w http.ResponseWriter, r *http.Request) {
 		StartPort    int     `json:"start_port"`
 		Count        int     `json:"count"`
 		NamePrefix   string  `json:"name_prefix"`
+		Group        string  `json:"group"`
 		Username     string  `json:"username"`
 		Password     string  `json:"password"`
 		Proto        string  `json:"proto"`
@@ -311,6 +334,11 @@ func (ws *WebServer) handleProxiesBulk(w http.ResponseWriter, r *http.Request) {
 
 	if req.NamePrefix == "" {
 		req.NamePrefix = "Luồng"
+	}
+
+	group := strings.TrimSpace(req.Group)
+	if group == "" {
+		group = "Mặc định"
 	}
 
 	rotType := store.RotationPolicy(req.RotationType)
@@ -363,6 +391,7 @@ func (ws *WebServer) handleProxiesBulk(w http.ResponseWriter, r *http.Request) {
 		acc := &store.ProxyAccount{
 			ID:           fmt.Sprintf("px-%d-%d", time.Now().UnixNano(), port),
 			Name:         fmt.Sprintf("%s #%d (Port %d)", req.NamePrefix, i+1, port),
+			Group:        group,
 			Port:         port,
 			Username:     uname,
 			Password:     pass,
@@ -424,6 +453,7 @@ func (ws *WebServer) handleProxyItem(w http.ResponseWriter, r *http.Request) {
 	case http.MethodPut:
 		var req struct {
 			Name         string   `json:"name"`
+			Group        string   `json:"group"`
 			Port         int      `json:"port"`
 			Username     string   `json:"username"`
 			Password     string   `json:"password"`
@@ -444,6 +474,9 @@ func (ws *WebServer) handleProxyItem(w http.ResponseWriter, r *http.Request) {
 
 		if req.Name != "" {
 			acc.Name = req.Name
+		}
+		if req.Group != "" {
+			acc.Group = strings.TrimSpace(req.Group)
 		}
 		if req.Username != "" {
 			acc.Username = req.Username
