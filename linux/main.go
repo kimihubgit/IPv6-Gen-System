@@ -49,6 +49,9 @@ func main() {
 	flag.StringVar(&publicIPFlag, "public-ip", "", "Địa chỉ IPv4 công khai của máy chủ")
 	flag.Parse()
 
+	// Raise file descriptor limits on Linux to handle high concurrency (500+ threads)
+	raiseFDLimit()
+
 	log.Println("==================================================================")
 	log.Println("     🌐 IPV6 PROXY HUB ENTERPRISE SERVER (LINUX ANY-IP)           ")
 	log.Println("==================================================================")

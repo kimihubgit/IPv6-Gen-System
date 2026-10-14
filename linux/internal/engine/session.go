@@ -30,7 +30,7 @@ type SubnetPool struct {
 
 func NewSubnetPool(ipNet *net.IPNet, size int) *SubnetPool {
 	if size <= 0 {
-		size = 256
+		size = 4096
 	}
 	pool := &SubnetPool{
 		ips:   make([]net.IP, size),
@@ -80,7 +80,7 @@ type SessionManager struct {
 func NewSessionManager(ipNet *net.IPNet) *SessionManager {
 	sm := &SessionManager{
 		sessions: make(map[string]*SessionIPEntry),
-		pool:     NewSubnetPool(ipNet, 256),
+		pool:     NewSubnetPool(ipNet, 4096),
 		ipNet:    ipNet,
 		stopChan: make(chan struct{}),
 	}
@@ -98,7 +98,7 @@ func (sm *SessionManager) Close() {
 }
 
 func (sm *SessionManager) cleanupLoop() {
-	ticker := time.NewTicker(30 * time.Second)
+	ticker := time.NewTicker(15 * time.Second)
 	defer ticker.Stop()
 
 	for {
@@ -117,7 +117,7 @@ func (sm *SessionManager) cleanupLoop() {
 
 			// 2. Gently rotate a batch of pool IPs so addresses evolve over time
 			if sm.pool != nil {
-				sm.pool.RefreshBatch(16)
+				sm.pool.RefreshBatch(128)
 			}
 		}
 	}

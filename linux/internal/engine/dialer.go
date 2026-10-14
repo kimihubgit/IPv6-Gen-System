@@ -79,15 +79,31 @@ func resolveHost(ctx context.Context, host string) ([]net.IP, error) {
 		return entry.ips, nil
 	}
 
-	ips, err := net.DefaultResolver.LookupIP(ctx, "ip", cleanHost)
+	// 2-second timeout to prevent DNS lookup hanging under high load
+	lookupCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+
+	ips, err := net.DefaultResolver.LookupIP(lookupCtx, "ip", cleanHost)
 	if err != nil {
+		// If lookup failed but we have a slightly expired cache, use it as emergency fallback!
+		if ok && len(entry.ips) > 0 {
+			return entry.ips, nil
+		}
 		return nil, err
 	}
 
 	dnsCacheMu.Lock()
+	// Gentle cache pruning if too many domains
+	if len(dnsCache) > 2000 {
+		for k, v := range dnsCache {
+			if now.After(v.expiresAt) {
+				delete(dnsCache, k)
+			}
+		}
+	}
 	dnsCache[cleanHost] = dnsCacheEntry{
 		ips:       ips,
-		expiresAt: now.Add(2 * time.Minute),
+		expiresAt: now.Add(5 * time.Minute),
 	}
 	dnsCacheMu.Unlock()
 	return ips, nil
@@ -108,7 +124,7 @@ func DialOutbound(ctx context.Context, targetAddr string, outIP net.IP) (net.Con
 	if err != nil {
 		// Fallback to direct dial if DNS resolve failed
 		fallbackDialer := &net.Dialer{
-			Timeout:   5 * time.Second,
+			Timeout:   3 * time.Second,
 			KeepAlive: 30 * time.Second,
 		}
 		conn, dialErr := fallbackDialer.DialContext(ctx, "tcp", targetAddr)
@@ -131,15 +147,22 @@ func DialOutbound(ctx context.Context, targetAddr string, outIP net.IP) (net.Con
 
 	// 2. Try IPv6 first if destination supports IPv6 and we have outIP
 	if len(ipv6List) > 0 && outIP != nil {
+		// 1200ms timeout prevents hanging 3s when target rate-limits or drops IPv6 SYN
 		dialer6 := &net.Dialer{
-			Timeout:   3 * time.Second,
+			Timeout:   1200 * time.Millisecond,
 			KeepAlive: 30 * time.Second,
 			LocalAddr: &net.TCPAddr{
 				IP: outIP,
 			},
 		}
 
-		for _, dstIP := range ipv6List {
+		// Try at most the first 2 IPv6 addresses to avoid multi-second cascading timeouts
+		maxTries := len(ipv6List)
+		if maxTries > 2 {
+			maxTries = 2
+		}
+		for i := 0; i < maxTries; i++ {
+			dstIP := ipv6List[i]
 			dstAddr := net.JoinHostPort(dstIP.String(), port)
 			conn, dialErr := dialer6.DialContext(ctx, "tcp6", dstAddr)
 			if dialErr == nil {
@@ -157,12 +180,17 @@ func DialOutbound(ctx context.Context, targetAddr string, outIP net.IP) (net.Con
 
 	// 3. Fallback to IPv4 if destination is IPv4 or IPv6 dial failed
 	fallbackDialer := &net.Dialer{
-		Timeout:   5 * time.Second,
+		Timeout:   3 * time.Second,
 		KeepAlive: 30 * time.Second,
 	}
 
 	if len(ipv4List) > 0 {
-		for _, dstIP := range ipv4List {
+		maxV4Tries := len(ipv4List)
+		if maxV4Tries > 2 {
+			maxV4Tries = 2
+		}
+		for i := 0; i < maxV4Tries; i++ {
+			dstIP := ipv4List[i]
 			dstAddr := net.JoinHostPort(dstIP.String(), port)
 			conn, dialErr := fallbackDialer.DialContext(ctx, "tcp", dstAddr)
 			if dialErr == nil {
