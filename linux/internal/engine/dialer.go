@@ -68,6 +68,9 @@ var (
 func resolveHost(ctx context.Context, host string) ([]net.IP, error) {
 	cleanHost := strings.Trim(host, "[]")
 	if parsed := net.ParseIP(cleanHost); parsed != nil {
+		if parsed.To4() != nil {
+			return nil, fmt.Errorf("địa chỉ %s là IPv4, hệ thống chỉ hỗ trợ thuần IPv6 (Strict IPv6 Only)", cleanHost)
+		}
 		return []net.IP{parsed}, nil
 	}
 
@@ -83,13 +86,17 @@ func resolveHost(ctx context.Context, host string) ([]net.IP, error) {
 	lookupCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
 	defer cancel()
 
-	ips, err := net.DefaultResolver.LookupIP(lookupCtx, "ip", cleanHost)
-	if err != nil {
-		// If lookup failed but we have a slightly expired cache, use it as emergency fallback!
+	// Query specifically IPv6 (AAAA records) only!
+	ips, err := net.DefaultResolver.LookupIP(lookupCtx, "ip6", cleanHost)
+	if err != nil || len(ips) == 0 {
+		// If lookup failed but we have a slightly expired cache, use it as emergency fallback
 		if ok && len(entry.ips) > 0 {
 			return entry.ips, nil
 		}
-		return nil, err
+		if err != nil {
+			return nil, fmt.Errorf("không thể phân giải IPv6 cho %s (web không hỗ trợ IPv6 hoặc lỗi DNS): %w", cleanHost, err)
+		}
+		return nil, fmt.Errorf("trang web %s không hỗ trợ địa chỉ IPv6 (Strict IPv6 Only)", cleanHost)
 	}
 
 	dnsCacheMu.Lock()
@@ -109,9 +116,8 @@ func resolveHost(ctx context.Context, host string) ([]net.IP, error) {
 	return ips, nil
 }
 
-// DialOutbound connects to destination with the chosen IPv6.
-// If the destination has IPv6, it connects via tcp6 directly (ultra fast ~30-50ms).
-// If the destination only has IPv4 (IPv4-only site), it immediately connects via IPv4.
+// DialOutbound connects strictly to destination via the chosen rotated IPv6.
+// Strict IPv6 Only: Absolutely NO IPv4 fallback to guarantee 100% IPv6 anonymity and isolation.
 func DialOutbound(ctx context.Context, targetAddr string, outIP net.IP) (net.Conn, net.IP, error) {
 	host, port, err := net.SplitHostPort(targetAddr)
 	if err != nil {
@@ -119,93 +125,52 @@ func DialOutbound(ctx context.Context, targetAddr string, outIP net.IP) (net.Con
 		port = "80"
 	}
 
-	// 1. Resolve host using zero-latency in-memory DNS cache
+	if outIP == nil {
+		return nil, nil, fmt.Errorf("không có địa chỉ IPv6 gửi đi (outIP is nil)")
+	}
+
+	// 1. Resolve host using zero-latency in-memory DNS cache (Strict IPv6 AAAA)
 	ips, err := resolveHost(ctx, host)
 	if err != nil {
-		// Fallback to direct dial if DNS resolve failed
-		fallbackDialer := &net.Dialer{
-			Timeout:   3 * time.Second,
-			KeepAlive: 30 * time.Second,
-		}
-		conn, dialErr := fallbackDialer.DialContext(ctx, "tcp", targetAddr)
-		if dialErr == nil {
-			TuneTCPConn(conn)
-			return conn, nil, nil
-		}
-		return nil, nil, fmt.Errorf("không thể phân giải và kết nối tới %s: %w", targetAddr, err)
+		return nil, nil, err
 	}
 
 	var ipv6List []net.IP
-	var ipv4List []net.IP
 	for _, ip := range ips {
 		if ip.To4() == nil {
 			ipv6List = append(ipv6List, ip)
-		} else {
-			ipv4List = append(ipv4List, ip)
 		}
 	}
 
-	// 2. Try IPv6 first if destination supports IPv6 and we have outIP
-	if len(ipv6List) > 0 && outIP != nil {
-		// 1200ms timeout prevents hanging 3s when target rate-limits or drops IPv6 SYN
-		dialer6 := &net.Dialer{
-			Timeout:   1200 * time.Millisecond,
-			KeepAlive: 30 * time.Second,
-			LocalAddr: &net.TCPAddr{
-				IP: outIP,
-			},
-		}
-
-		// Try at most the first 2 IPv6 addresses to avoid multi-second cascading timeouts
-		maxTries := len(ipv6List)
-		if maxTries > 2 {
-			maxTries = 2
-		}
-		for i := 0; i < maxTries; i++ {
-			dstIP := ipv6List[i]
-			dstAddr := net.JoinHostPort(dstIP.String(), port)
-			conn, dialErr := dialer6.DialContext(ctx, "tcp6", dstAddr)
-			if dialErr == nil {
-				TuneTCPConn(conn)
-				return conn, outIP, nil
-			}
-		}
-
-		// If destination was an explicit IPv6 literal, don't fallback to IPv4
-		cleanHost := strings.Trim(host, "[]")
-		if parsed := net.ParseIP(cleanHost); parsed != nil && parsed.To4() == nil {
-			return nil, nil, fmt.Errorf("không thể kết nối tới IPv6 %s qua %s", targetAddr, outIP)
-		}
+	if len(ipv6List) == 0 {
+		return nil, nil, fmt.Errorf("trang web %s không hỗ trợ địa chỉ IPv6 (Strict IPv6 Only)", host)
 	}
 
-	// 3. Fallback to IPv4 if destination is IPv4 or IPv6 dial failed
-	fallbackDialer := &net.Dialer{
+	// 2. Connect strictly via chosen IPv6
+	dialer6 := &net.Dialer{
 		Timeout:   3 * time.Second,
 		KeepAlive: 30 * time.Second,
+		LocalAddr: &net.TCPAddr{
+			IP: outIP,
+		},
 	}
 
-	if len(ipv4List) > 0 {
-		maxV4Tries := len(ipv4List)
-		if maxV4Tries > 2 {
-			maxV4Tries = 2
+	var lastErr error
+	maxTries := len(ipv6List)
+	if maxTries > 3 {
+		maxTries = 3
+	}
+
+	for i := 0; i < maxTries; i++ {
+		dstIP := ipv6List[i]
+		dstAddr := net.JoinHostPort(dstIP.String(), port)
+		conn, dialErr := dialer6.DialContext(ctx, "tcp6", dstAddr)
+		if dialErr == nil {
+			TuneTCPConn(conn)
+			return conn, outIP, nil
 		}
-		for i := 0; i < maxV4Tries; i++ {
-			dstIP := ipv4List[i]
-			dstAddr := net.JoinHostPort(dstIP.String(), port)
-			conn, dialErr := fallbackDialer.DialContext(ctx, "tcp", dstAddr)
-			if dialErr == nil {
-				TuneTCPConn(conn)
-				return conn, nil, nil
-			}
-		}
+		lastErr = dialErr
 	}
 
-	// Final generic dial
-	conn, err := fallbackDialer.DialContext(ctx, "tcp", targetAddr)
-	if err != nil {
-		return nil, nil, fmt.Errorf("không thể kết nối tới đích %s: %w", targetAddr, err)
-	}
-
-	TuneTCPConn(conn)
-	return conn, nil, nil
+	return nil, nil, fmt.Errorf("không thể kết nối tới IPv6 của %s qua %s: %w", targetAddr, outIP, lastErr)
 }
